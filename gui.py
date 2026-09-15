@@ -282,6 +282,9 @@ class LLMFallbackGUI:
         self.tree_status.column("status", width=85, anchor=tk.W)
         self.tree_status.pack(fill=tk.BOTH, expand=True)
 
+        # Preenche a tabela imediatamente ao abrir a GUI
+        self._refresh_status_table()
+
         # --- Área de Chat no painel direito ---
         top_bar = tk.Frame(right_panel, bg=BG_PANEL)
         top_bar.pack(fill=tk.X, pady=(0, 8))
@@ -1152,15 +1155,64 @@ class LLMFallbackGUI:
         self.chat_area.see(tk.END)
         self.chat_area.config(state=tk.DISABLED)
 
-    def trigger_health_check(self):
-        """Dispara verificação assíncrona das APIs configuradas."""
+    def _refresh_status_table(self):
+        """Popula imediatamente a tabela de status com todos os provedores e modelos configurados."""
+        if not hasattr(self, "tree_status"):
+            return
+
+        valid_ids = set()
         for p in app_config.providers:
+            valid_ids.add(p.id)
+            if not p.enabled:
+                st = "⚪ Inativo"
+            elif p.is_placeholder():
+                st = "🟡 Sem Chave"
+            else:
+                st = "⏳ Verificando..."
+
             if self.tree_status.exists(p.id):
-                self.tree_status.item(p.id, values=(p.name, "...", "Testando..."))
+                current_vals = list(self.tree_status.item(p.id, "values"))
+                if not p.enabled:
+                    current_vals[2] = "-"
+                    current_vals[3] = "⚪ Inativo"
+                elif p.is_placeholder():
+                    current_vals[2] = "-"
+                    current_vals[3] = "🟡 Sem Chave"
+                current_vals[0] = p.name
+                current_vals[1] = p.model
+                self.tree_status.item(p.id, values=current_vals)
+            else:
+                self.tree_status.insert(
+                    "",
+                    tk.END,
+                    iid=p.id,
+                    values=(p.name, p.model, "-", st),
+                )
+
+        # Remove provedores que foram excluídos
+        for item in self.tree_status.get_children():
+            if item not in valid_ids:
+                self.tree_status.delete(item)
+
+    def trigger_health_check(self):
+        """Dispara verificação assíncrona das APIs configuradas, atualizando cada provedor assim que responder."""
+        self._refresh_status_table()
+        for p in app_config.providers:
+            if p.enabled and not p.is_placeholder():
+                if self.tree_status.exists(p.id):
+                    self.tree_status.item(p.id, values=(p.name, p.model, "...", "⏳ Testando..."))
 
         def _worker():
-            results = asyncio.run(router.check_all_health())
-            self.gui_queue.put(("health_results", results))
+            async def _check_each():
+                tasks = [router.check_provider_health(p, timeout=10.0) for p in app_config.providers]
+                for fut in asyncio.as_completed(tasks):
+                    try:
+                        res = await fut
+                        self.gui_queue.put(("health_single_result", res))
+                    except Exception:
+                        pass
+
+            asyncio.run(_check_each())
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1251,13 +1303,12 @@ class LLMFallbackGUI:
             while not self.gui_queue.empty():
                 msg_type, data = self.gui_queue.get_nowait()
 
-                if msg_type == "health_results":
-                    for r in data:
+                if msg_type in ("health_results", "health_single_result"):
+                    items = data if msg_type == "health_results" else [data]
+                    for r in items:
                         prov = app_config.get_provider(r.provider_id)
                         m_str = (prov.model if prov else "-")
-                        if not self.tree_status.exists(r.provider_id):
-                            self.tree_status.insert("", tk.END, iid=r.provider_id, values=(r.name, m_str, "-", ""))
-                        lat_str = f"{r.latency_ms}ms" if r.latency_ms else "-"
+                        lat_str = f"{r.latency_ms}ms" if r.latency_ms is not None else "-"
                         if r.status == "online":
                             st_str = "🟢 Online"
                         elif r.status == "disabled":
@@ -1265,8 +1316,11 @@ class LLMFallbackGUI:
                         elif r.status == "placeholder":
                             st_str = "🟡 Sem Chave"
                         else:
-                            st_str = f"🔴 Erro"
-                        self.tree_status.item(r.provider_id, values=(r.name, m_str, lat_str, st_str))
+                            st_str = "🔴 Erro"
+                        if not self.tree_status.exists(r.provider_id):
+                            self.tree_status.insert("", tk.END, iid=r.provider_id, values=(r.name, m_str, lat_str, st_str))
+                        else:
+                            self.tree_status.item(r.provider_id, values=(r.name, m_str, lat_str, st_str))
 
                 elif msg_type == "start_bot_msg":
                     self.chat_area.config(state=tk.NORMAL)
