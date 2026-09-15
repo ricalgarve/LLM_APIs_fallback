@@ -1,0 +1,37 @@
+# Ambientes Virtuais (Virtual Environments)
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Arquivos de Configuração com Chaves Sensíveis
+config.json
+.env
+
+# Byte-compiled / cache do Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Caches e ferramentas de teste
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# IDEs e Editores
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Arquivos de Sistema Operacional
+.DS_Store
+Thumbs.db
+desktop.ini
