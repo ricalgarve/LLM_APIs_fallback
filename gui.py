@@ -16,7 +16,7 @@ import threading
 import time
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Tuple
 
 from config import app_config, ProviderConfig, get_local_ip, generate_bearer_token
 from router import router
@@ -57,6 +57,8 @@ class LLMFallbackGUI:
         self.is_generating = False
         self.local_ip = get_local_ip()
         self.current_editing_id: Optional[str] = None
+        self.last_sent_prompt: str = ""
+        self.last_used_provider_id: Optional[str] = None
 
         # Inicia servidor local em thread separada se a porta estiver livre
         self.start_background_server()
@@ -238,17 +240,32 @@ class LLMFallbackGUI:
             command=self._on_thinking_toggled,
         ).pack(anchor=tk.W, pady=(0, 10))
 
-        # Botão Copiar cURL Rápido
-        btn_copy_curl = tk.Button(
+        # Botão Ver Payload & cURL do Provedor Real
+        btn_view_payload = tk.Button(
             left_panel,
-            text="📋 Copiar cURL Localhost",
-            command=self.copy_curl_to_clipboard,
+            text="📦 Ver Payload Real & cURL",
+            command=self.show_payload_modal,
             font=FONT_BOLD,
             fg="#11111b",
             bg=ACCENT_PURPLE,
             activebackground="#b4befe",
             relief=tk.FLAT,
-            pady=5,
+            pady=6,
+            cursor="hand2",
+        )
+        btn_view_payload.pack(fill=tk.X, pady=(0, 6))
+
+        # Botão Copiar cURL do Provedor Real
+        btn_copy_curl = tk.Button(
+            left_panel,
+            text="📋 Copiar cURL (Provedor Real)",
+            command=self.copy_curl_to_clipboard,
+            font=FONT_MAIN,
+            fg=FG_TEXT,
+            bg=BG_INPUT,
+            activebackground=BG_PANEL,
+            relief=tk.FLAT,
+            pady=4,
             cursor="hand2",
         )
         btn_copy_curl.pack(fill=tk.X, pady=(0, 10))
@@ -302,6 +319,19 @@ class LLMFallbackGUI:
             pady=2,
             cursor="hand2",
         ).pack(side=tk.RIGHT)
+
+        tk.Button(
+            top_bar,
+            text="📦 Ver Payload Real / cURL",
+            command=self.show_payload_modal,
+            font=FONT_MAIN,
+            fg=ACCENT_PURPLE,
+            bg=BG_INPUT,
+            relief=tk.FLAT,
+            padx=8,
+            pady=2,
+            cursor="hand2",
+        ).pack(side=tk.RIGHT, padx=(0, 8))
 
         self.chat_area = scrolledtext.ScrolledText(
             right_panel,
@@ -1079,8 +1109,108 @@ class LLMFallbackGUI:
         self._update_curl_preview()
         messagebox.showinfo("Sucesso", "Configurações de rede e segurança salvas com sucesso!")
 
-    def generate_curl_command(self) -> str:
-        """Gera o comando cURL formatado de acordo com a configuração atual."""
+    def get_effective_provider(self, provider_id: Optional[str] = None) -> Optional[ProviderConfig]:
+        """Retorna o provedor real que receberá ou recebeu a requisição."""
+        if provider_id:
+            p = app_config.get_provider(provider_id)
+            if p:
+                return p
+
+        # 1. Se o usuário selecionou um modo manual no combobox da aba Chat
+        if hasattr(self, "mode_var"):
+            selected_mode = self.mode_var.get()
+            if selected_mode and not selected_mode.startswith("auto"):
+                prov_id = selected_mode.split()[0]
+                p = app_config.get_provider(prov_id)
+                if p:
+                    return p
+
+        # 2. Se um provedor respondeu na última chamada do chat
+        if getattr(self, "last_used_provider_id", None):
+            p = app_config.get_provider(self.last_used_provider_id)
+            if p:
+                return p
+
+        # 3. Primeiro candidato elegível segundo o roteador
+        try:
+            candidates = router.get_candidate_providers()
+            if candidates:
+                return candidates[0]
+        except Exception:
+            pass
+
+        # 4. Primeiro provedor habilitado no config
+        for p in app_config.providers:
+            if p.enabled:
+                return p
+
+        # 5. Qualquer provedor existente
+        return app_config.providers[0] if app_config.providers else None
+
+    def get_provider_chat_payload(
+        self, provider: Optional[ProviderConfig] = None
+    ) -> Tuple[Dict[str, Any], str, Optional[ProviderConfig]]:
+        """
+        Retorna o payload real enviado diretamente para a API do provedor externo,
+        contendo o modelo real do provedor, o prompt do usuário e a flag stream.
+        """
+        if provider is None:
+            provider = self.get_effective_provider()
+
+        prompt = ""
+        source = "Exemplo padrão"
+        if hasattr(self, "input_entry"):
+            txt = self.input_entry.get().strip()
+            if txt:
+                prompt = txt
+                source = "Prompt digitado no campo de entrada"
+
+        if not prompt and getattr(self, "last_sent_prompt", None):
+            prompt = self.last_sent_prompt
+            source = "Última mensagem enviada no chat"
+
+        if not prompt:
+            prompt = "Olá, barramento de fallback!"
+
+        model_name = provider.model if provider else "default-model"
+        stream_val = self.stream_var.get() if hasattr(self, "stream_var") else True
+
+        payload = {
+            "model": model_name,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                }
+            ],
+            "stream": stream_val,
+        }
+        return payload, source, provider
+
+    def generate_provider_curl_command(
+        self, provider: Optional[ProviderConfig] = None, payload: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """Gera o comando cURL real enviado diretamente para o endpoint oficial do provedor externo (sem localhost)."""
+        if provider is None:
+            provider = self.get_effective_provider()
+
+        if payload is None:
+            payload, _, provider = self.get_provider_chat_payload(provider)
+
+        if not provider:
+            return "# Nenhum provedor configurado no momento."
+
+        url = f"{provider.base_url.rstrip('/')}/chat/completions"
+        headers = [
+            '-H "Content-Type: application/json"',
+            f'-H "Authorization: Bearer {provider.api_key}"',
+        ]
+        json_str = json.dumps(payload, ensure_ascii=False)
+        headers_cmd = " ".join(headers)
+        return f'curl -N -X POST "{url}" {headers_cmd} -d \'{json_str}\''
+
+    def generate_localhost_curl_command(self) -> str:
+        """Gera o comando cURL para o servidor localhost (usado na aba Rede & Segurança)."""
         host = self.local_ip if app_config.server.host == "0.0.0.0" else "127.0.0.1"
         port = app_config.server.port
         url = f"http://{host}:{port}/v1/chat/completions"
@@ -1095,20 +1225,259 @@ class LLMFallbackGUI:
             "stream": True,
         }
         json_str = json.dumps(payload, ensure_ascii=False)
-
         headers_cmd = " ".join(headers)
         return f'curl -N -X POST "{url}" {headers_cmd} -d \'{json_str}\''
 
     def _update_curl_preview(self):
-        curl_cmd = self.generate_curl_command()
-        self.text_curl_preview.delete("1.0", tk.END)
-        self.text_curl_preview.insert("1.0", curl_cmd)
+        """Atualiza a caixa de texto de cURL da aba Rede & Segurança."""
+        curl_cmd = self.generate_localhost_curl_command()
+        if hasattr(self, "text_curl_preview"):
+            self.text_curl_preview.delete("1.0", tk.END)
+            self.text_curl_preview.insert("1.0", curl_cmd)
 
     def copy_curl_to_clipboard(self):
-        curl_cmd = self.generate_curl_command()
+        """Copia o comando cURL real do provedor para a área de transferência."""
+        provider = self.get_effective_provider()
+        curl_cmd = self.generate_provider_curl_command(provider)
         self.root.clipboard_clear()
         self.root.clipboard_append(curl_cmd)
-        messagebox.showinfo("Copiado!", "Comando cURL copiado com sucesso para a área de transferência!")
+        p_name = provider.name if provider else "Provedor"
+        messagebox.showinfo("Copiado!", f"Comando cURL real para '{p_name}' copiado com sucesso!")
+
+    def show_payload_modal(self):
+        """Abre uma janela modal moderna com a visualização do JSON real enviado para a API externa do provedor e o comando cURL direto."""
+        modal = tk.Toplevel(self.root)
+        modal.title("Inspeção de Payload Real do Provedor & cURL Externo")
+        modal.geometry("820x670")
+        modal.minsize(700, 520)
+        modal.configure(bg=BG_DARK)
+        modal.transient(self.root)
+        modal.grab_set()
+
+        try:
+            x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 410
+            y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 335
+            modal.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+
+        current_prov = self.get_effective_provider()
+
+        # Cabeçalho da Janela Modal
+        hdr_frame = tk.Frame(modal, bg=BG_PANEL, padx=16, pady=12)
+        hdr_frame.pack(fill=tk.X)
+
+        tk.Label(
+            hdr_frame,
+            text="📦 Payload Real Enviado para a API Oficial do Provedor",
+            font=FONT_TITLE,
+            fg=ACCENT_PURPLE,
+            bg=BG_PANEL,
+        ).pack(anchor=tk.W)
+
+        # Barra de seleção de provedor dentro do modal
+        sel_bar = tk.Frame(hdr_frame, bg=BG_PANEL)
+        sel_bar.pack(fill=tk.X, pady=(8, 4))
+
+        tk.Label(
+            sel_bar,
+            text="Provedor Alvo:",
+            font=FONT_BOLD,
+            fg=FG_TEXT,
+            bg=BG_PANEL,
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        prov_options = [f"{p.id} ({p.name} - {p.model})" for p in app_config.providers]
+        modal_prov_var = tk.StringVar()
+
+        # Define valor inicial
+        initial_sel = prov_options[0] if prov_options else ""
+        if current_prov:
+            for opt in prov_options:
+                if opt.startswith(f"{current_prov.id} ("):
+                    initial_sel = opt
+                    break
+        modal_prov_var.set(initial_sel)
+
+        combo_modal_prov = ttk.Combobox(
+            sel_bar,
+            textvariable=modal_prov_var,
+            values=prov_options,
+            state="readonly",
+            width=40,
+            font=FONT_MAIN,
+        )
+        combo_modal_prov.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        lbl_info = tk.Label(
+            hdr_frame,
+            text="",
+            font=FONT_MAIN,
+            fg=FG_SUBTEXT,
+            bg=BG_PANEL,
+            justify=tk.LEFT,
+        )
+        lbl_info.pack(anchor=tk.W, pady=(4, 0))
+
+        content_box = tk.Frame(modal, bg=BG_DARK, padx=16, pady=10)
+        content_box.pack(fill=tk.BOTH, expand=True)
+
+        # Seção 1: JSON do Payload Real
+        sec_json = tk.Frame(content_box, bg=BG_DARK)
+        sec_json.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        json_bar = tk.Frame(sec_json, bg=BG_DARK)
+        json_bar.pack(fill=tk.X, pady=(0, 4))
+
+        tk.Label(
+            json_bar,
+            text="📄 JSON do Payload Real (enviado no corpo da requisição HTTP):",
+            font=FONT_BOLD,
+            fg=ACCENT_BLUE,
+            bg=BG_DARK,
+        ).pack(side=tk.LEFT)
+
+        def _copy_json():
+            text = text_json.get("1.0", tk.END).strip()
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            messagebox.showinfo("Copiado", "JSON do payload copiado com sucesso!", parent=modal)
+
+        tk.Button(
+            json_bar,
+            text="📋 Copiar JSON",
+            command=_copy_json,
+            font=FONT_MAIN,
+            fg="#11111b",
+            bg=ACCENT_BLUE,
+            activebackground="#b4befe",
+            relief=tk.FLAT,
+            padx=10,
+            pady=2,
+            cursor="hand2",
+        ).pack(side=tk.RIGHT)
+
+        text_json = scrolledtext.ScrolledText(
+            sec_json,
+            wrap=tk.WORD,
+            bg="#11111b",
+            fg="#a6e3a1",
+            insertbackground=FG_TEXT,
+            font=("Consolas", 10),
+            relief=tk.FLAT,
+            height=10,
+            padx=10,
+            pady=8,
+        )
+        text_json.pack(fill=tk.BOTH, expand=True)
+
+        # Seção 2: Comando cURL Real
+        sec_curl = tk.Frame(content_box, bg=BG_DARK)
+        sec_curl.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+
+        curl_bar = tk.Frame(sec_curl, bg=BG_DARK)
+        curl_bar.pack(fill=tk.X, pady=(0, 4))
+
+        tk.Label(
+            curl_bar,
+            text="💻 Comando cURL Direto para a API Oficial (Sem passar por Localhost):",
+            font=FONT_BOLD,
+            fg=ACCENT_YELLOW,
+            bg=BG_DARK,
+        ).pack(side=tk.LEFT)
+
+        def _copy_curl():
+            text = text_curl.get("1.0", tk.END).strip()
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            messagebox.showinfo("Copiado", "Comando cURL copiado com sucesso!", parent=modal)
+
+        tk.Button(
+            curl_bar,
+            text="📋 Copiar cURL",
+            command=_copy_curl,
+            font=FONT_MAIN,
+            fg="#11111b",
+            bg=ACCENT_YELLOW,
+            activebackground="#f9e2af",
+            relief=tk.FLAT,
+            padx=10,
+            pady=2,
+            cursor="hand2",
+        ).pack(side=tk.RIGHT)
+
+        text_curl = scrolledtext.ScrolledText(
+            sec_curl,
+            wrap=tk.CHAR,
+            bg="#11111b",
+            fg="#89dceb",
+            insertbackground=FG_TEXT,
+            font=("Consolas", 9),
+            relief=tk.FLAT,
+            height=6,
+            padx=10,
+            pady=8,
+        )
+        text_curl.pack(fill=tk.BOTH, expand=True)
+
+        def _update_view():
+            selected_str = modal_prov_var.get()
+            prov_id = selected_str.split()[0] if selected_str else None
+            p = app_config.get_provider(prov_id) if prov_id else None
+            payload, source, p = self.get_provider_chat_payload(p)
+            c = self.generate_provider_curl_command(p, payload)
+
+            url_txt = f"{p.base_url.rstrip('/')}/chat/completions" if p else "-"
+            m_txt = p.model if p else "-"
+            lbl_info.config(
+                text=f"🌐 Endpoint: {url_txt}\n🤖 Modelo Oficial: {m_txt}   |   Origem: {source}   |   Stream: {'Sim' if payload.get('stream') else 'Não'}"
+            )
+
+            text_json.config(state=tk.NORMAL)
+            text_json.delete("1.0", tk.END)
+            text_json.insert(tk.END, json.dumps(payload, indent=2, ensure_ascii=False))
+            text_json.config(state=tk.DISABLED)
+
+            text_curl.config(state=tk.NORMAL)
+            text_curl.delete("1.0", tk.END)
+            text_curl.insert(tk.END, c)
+            text_curl.config(state=tk.DISABLED)
+
+        combo_modal_prov.bind("<<ComboboxSelected>>", lambda e: _update_view())
+
+        # Rodapé
+        footer = tk.Frame(modal, bg=BG_PANEL, padx=16, pady=10)
+        footer.pack(fill=tk.X)
+
+        tk.Button(
+            footer,
+            text="🔄 Atualizar com Texto Atual do Chat",
+            command=_update_view,
+            font=FONT_MAIN,
+            fg=FG_TEXT,
+            bg=BG_INPUT,
+            activebackground=BG_PANEL,
+            relief=tk.FLAT,
+            padx=12,
+            pady=4,
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
+
+        tk.Button(
+            footer,
+            text="Fechar",
+            command=modal.destroy,
+            font=FONT_BOLD,
+            fg="#11111b",
+            bg=ACCENT_RED,
+            activebackground="#f38ba8",
+            relief=tk.FLAT,
+            padx=16,
+            pady=4,
+            cursor="hand2",
+        ).pack(side=tk.RIGHT)
+
+        _update_view()
 
     # ==========================================================================
     # LÓGICA GERAL & CHAT
@@ -1224,6 +1593,7 @@ class LLMFallbackGUI:
         if not text:
             return
 
+        self.last_sent_prompt = text
         self.input_entry.delete(0, tk.END)
         self.is_generating = True
         self.btn_send.config(text="Gerando...", state=tk.DISABLED)
@@ -1236,16 +1606,19 @@ class LLMFallbackGUI:
 
         use_stream = self.stream_var.get()
         show_thinking = self.thinking_var.get()
+        mode = app_config.server.mode
+        model_target = mode if mode else "auto"
 
         def _chat_worker():
             payload = {
                 "messages": [{"role": "user", "content": text}],
-                "model": "auto",
+                "model": model_target,
             }
             try:
                 if use_stream:
                     async def _stream_req():
                         sse_gen, provider = await router.execute_completion(payload, stream=True)
+                        self.gui_queue.put(("set_last_provider", provider.id))
                         self.gui_queue.put(("start_bot_msg", f"[{provider.name}]: "))
                         in_thinking = False
                         async for chunk in sse_gen:
@@ -1279,6 +1652,7 @@ class LLMFallbackGUI:
                 else:
                     async def _block_req():
                         res, provider = await router.execute_completion(payload, stream=False)
+                        self.gui_queue.put(("set_last_provider", provider.id))
                         msg = res.get("choices", [{}])[0].get("message", {})
                         content = msg.get("content", "")
                         reasoning = msg.get("reasoning_content", "")
@@ -1321,6 +1695,9 @@ class LLMFallbackGUI:
                             self.tree_status.insert("", tk.END, iid=r.provider_id, values=(r.name, m_str, lat_str, st_str))
                         else:
                             self.tree_status.item(r.provider_id, values=(r.name, m_str, lat_str, st_str))
+
+                elif msg_type == "set_last_provider":
+                    self.last_used_provider_id = data
 
                 elif msg_type == "start_bot_msg":
                     self.chat_area.config(state=tk.NORMAL)
