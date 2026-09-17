@@ -27,9 +27,13 @@ class HealthResult:
     provider_id: str
     name: str
     base_url: str
-    status: str  # "online" | "offline" | "disabled" | "placeholder"
+    status: str  # "online" | "offline" | "disabled" | "placeholder" | "error"
     latency_ms: Optional[float] = None
     error_message: Optional[str] = None
+    status_code: Optional[int] = None
+    model: Optional[str] = None
+    checked_at: Optional[str] = None
+    raw_response: Optional[str] = None
 
 
 class LLMRouter:
@@ -37,29 +41,43 @@ class LLMRouter:
 
     def __init__(self):
         self.config = app_config
+        self.last_results: Dict[str, HealthResult] = {}
 
     def reload_config(self):
         self.config = app_config.load()
 
+    def get_provider_health(self, provider_id: str) -> Optional[HealthResult]:
+        return self.last_results.get(provider_id)
+
     async def check_provider_health(self, provider: ProviderConfig, timeout: float = 15.0) -> HealthResult:
         """Verifica a integridade de um provedor específico fazendo um ping leve de completion."""
+        checked_time = time.strftime("%H:%M:%S")
+
         if not provider.enabled:
-            return HealthResult(
+            res = HealthResult(
                 provider_id=provider.id,
                 name=provider.name,
                 base_url=provider.base_url,
                 status="disabled",
                 error_message="Desabilitado no config.json",
+                model=provider.model,
+                checked_at=checked_time,
             )
+            self.last_results[provider.id] = res
+            return res
 
         if provider.is_placeholder():
-            return HealthResult(
+            res = HealthResult(
                 provider_id=provider.id,
                 name=provider.name,
                 base_url=provider.base_url,
                 status="placeholder",
                 error_message="Chave de API não configurada",
+                model=provider.model,
+                checked_at=checked_time,
             )
+            self.last_results[provider.id] = res
+            return res
 
         headers = {
             "Authorization": f"Bearer {provider.api_key}",
@@ -80,38 +98,55 @@ class LLMRouter:
                 elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
 
                 if response.status_code == 200:
-                    return HealthResult(
+                    res = HealthResult(
                         provider_id=provider.id,
                         name=provider.name,
                         base_url=provider.base_url,
                         status="online",
                         latency_ms=elapsed_ms,
+                        status_code=200,
+                        model=provider.model,
+                        checked_at=checked_time,
                     )
                 else:
-                    return HealthResult(
+                    body_text = response.text
+                    res = HealthResult(
                         provider_id=provider.id,
                         name=provider.name,
                         base_url=provider.base_url,
                         status="error",
                         latency_ms=elapsed_ms,
-                        error_message=f"HTTP {response.status_code}: {response.text[:120]}",
+                        status_code=response.status_code,
+                        error_message=f"HTTP {response.status_code}: {body_text[:1000]}",
+                        raw_response=body_text,
+                        model=provider.model,
+                        checked_at=checked_time,
                     )
         except httpx.TimeoutException:
-            return HealthResult(
+            res = HealthResult(
                 provider_id=provider.id,
                 name=provider.name,
                 base_url=provider.base_url,
                 status="offline",
-                error_message="Timeout excedido",
+                error_message=f"Timeout excedido ({timeout}s)",
+                raw_response=f"O servidor não respondeu dentro do limite de {timeout} segundos.",
+                model=provider.model,
+                checked_at=checked_time,
             )
         except Exception as e:
-            return HealthResult(
+            res = HealthResult(
                 provider_id=provider.id,
                 name=provider.name,
                 base_url=provider.base_url,
                 status="offline",
                 error_message=str(e),
+                raw_response=repr(e),
+                model=provider.model,
+                checked_at=checked_time,
             )
+
+        self.last_results[provider.id] = res
+        return res
 
     async def check_all_health(self) -> List[HealthResult]:
         """Testa todos os provedores em paralelo."""
@@ -199,6 +234,16 @@ class LLMRouter:
                     response = await client.send(req, stream=True)
 
                     if response.status_code == 200:
+                        self.last_results[provider.id] = HealthResult(
+                            provider_id=provider.id,
+                            name=provider.name,
+                            base_url=provider.base_url,
+                            status="online",
+                            status_code=200,
+                            model=target_model,
+                            checked_at=time.strftime("%H:%M:%S"),
+                        )
+
                         async def sse_generator() -> AsyncGenerator[str, None]:
                             try:
                                 async for line in response.aiter_lines():
@@ -214,7 +259,19 @@ class LLMRouter:
                         body = await response.aread()
                         await response.aclose()
                         await client.aclose()
-                        err = f"Status {response.status_code} de {provider.name}: {body.decode(errors='ignore')[:200]}"
+                        raw_body = body.decode(errors='ignore')
+                        err = f"Status {response.status_code} de {provider.name}: {raw_body[:200]}"
+                        self.last_results[provider.id] = HealthResult(
+                            provider_id=provider.id,
+                            name=provider.name,
+                            base_url=provider.base_url,
+                            status="error",
+                            status_code=response.status_code,
+                            error_message=f"HTTP {response.status_code}: {raw_body[:1000]}",
+                            raw_response=raw_body,
+                            model=target_model,
+                            checked_at=time.strftime("%H:%M:%S"),
+                        )
                         bus_logger.emit("WARN", f"Falha no provedor {provider.name}: {err}. Tentando fallback...")
                         errors.append(f"{provider.name}: {err}")
                         continue
@@ -222,16 +279,47 @@ class LLMRouter:
                     async with httpx.AsyncClient(timeout=timeout) as client:
                         response = await client.post(url, headers=headers, json=req_payload)
                         if response.status_code == 200:
+                            self.last_results[provider.id] = HealthResult(
+                                provider_id=provider.id,
+                                name=provider.name,
+                                base_url=provider.base_url,
+                                status="online",
+                                status_code=200,
+                                model=target_model,
+                                checked_at=time.strftime("%H:%M:%S"),
+                            )
                             bus_logger.emit("SUCCESS", f"Resposta concluída com sucesso via {provider.name}")
                             return response.json(), provider
                         else:
-                            err = f"Status {response.status_code} de {provider.name}: {response.text[:200]}"
+                            raw_body = response.text
+                            err = f"Status {response.status_code} de {provider.name}: {raw_body[:200]}"
+                            self.last_results[provider.id] = HealthResult(
+                                provider_id=provider.id,
+                                name=provider.name,
+                                base_url=provider.base_url,
+                                status="error",
+                                status_code=response.status_code,
+                                error_message=f"HTTP {response.status_code}: {raw_body[:1000]}",
+                                raw_response=raw_body,
+                                model=target_model,
+                                checked_at=time.strftime("%H:%M:%S"),
+                            )
                             bus_logger.emit("WARN", f"Falha no provedor {provider.name}: {err}. Tentando fallback...")
                             errors.append(f"{provider.name}: {err}")
                             continue
 
             except Exception as e:
                 err = f"Exceção ao conectar em {provider.name}: {e}"
+                self.last_results[provider.id] = HealthResult(
+                    provider_id=provider.id,
+                    name=provider.name,
+                    base_url=provider.base_url,
+                    status="offline",
+                    error_message=str(e),
+                    raw_response=repr(e),
+                    model=target_model,
+                    checked_at=time.strftime("%H:%M:%S"),
+                )
                 bus_logger.emit("WARN", f"{err}. Tentando próximo provedor...")
                 errors.append(f"{provider.name}: {err}")
                 continue

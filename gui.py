@@ -19,7 +19,7 @@ from tkinter import ttk, messagebox, scrolledtext, simpledialog
 from typing import Optional, List, Dict, Any, Tuple
 
 from config import app_config, ProviderConfig, get_local_ip, generate_bearer_token
-from router import router
+from router import router, HealthResult
 from server import run_server
 from bus_logger import bus_logger
 
@@ -59,6 +59,9 @@ class LLMFallbackGUI:
         self.current_editing_id: Optional[str] = None
         self.last_sent_prompt: str = ""
         self.last_used_provider_id: Optional[str] = None
+        self.provider_health_details: Dict[str, Any] = {}
+        self.active_details_modal: Optional[tk.Toplevel] = None
+        self.active_details_prov_id: Optional[str] = None
 
         # Inicia servidor local em thread separada se a porta estiver livre
         self.start_background_server()
@@ -301,6 +304,37 @@ class LLMFallbackGUI:
 
         # Preenche a tabela imediatamente ao abrir a GUI
         self._refresh_status_table()
+
+        # Interações de clique, duplo clique e cursor na tabela de status
+        self.tree_status.bind("<ButtonRelease-1>", self._on_status_table_click)
+        self.tree_status.bind("<Double-1>", self._on_status_table_double_click)
+        self.tree_status.bind("<Motion>", self._on_status_table_motion)
+
+        # Barra de ação rápida para detalhes do status
+        status_bar = tk.Frame(left_panel, bg=BG_PANEL)
+        status_bar.pack(fill=tk.X, pady=(6, 2))
+
+        self.btn_view_status = tk.Button(
+            status_bar,
+            text="🔍 Ver Motivo / Detalhes",
+            command=self._on_view_selected_status_details,
+            font=FONT_MAIN,
+            fg="#11111b",
+            bg=ACCENT_BLUE,
+            activebackground="#b4befe",
+            relief=tk.FLAT,
+            pady=4,
+            cursor="hand2",
+        )
+        self.btn_view_status.pack(fill=tk.X)
+
+        tk.Label(
+            left_panel,
+            text="💡 Dica: Clique no provedor com erro para ver detalhes.",
+            font=("Segoe UI", 8),
+            fg=FG_SUBTEXT,
+            bg=BG_PANEL,
+        ).pack(anchor=tk.W, pady=(2, 0))
 
         # --- Área de Chat no painel direito ---
         top_bar = tk.Frame(right_panel, bg=BG_PANEL)
@@ -948,6 +982,7 @@ class LLMFallbackGUI:
                 enabled=p.enabled,
             )
             res = asyncio.run(router.check_provider_health(test_p))
+            self.gui_queue.put(("health_single_result", res))
             if res.status == "online":
                 msg = f"🟢 Provedor ONLINE!\nLatência: {res.latency_ms}ms\nModelo testado: {current_model}"
                 self.root.after(0, lambda: messagebox.showinfo("Teste Concluído", msg))
@@ -1480,6 +1515,452 @@ class LLMFallbackGUI:
         _update_view()
 
     # ==========================================================================
+    # MODAL DE DETALHES & DIAGNÓSTICO DE ERROS DE PROVEDORES
+    # ==========================================================================
+    def _on_status_table_click(self, event):
+        """Ao clicar em um provedor na lista de status, se deu erro ou aviso, abre a modal de diagnóstico."""
+        region = self.tree_status.identify_region(event.x, event.y)
+        if region not in ("cell", "tree", "item"):
+            return
+        item_id = self.tree_status.identify_row(event.y)
+        if not item_id:
+            return
+
+        current_vals = self.tree_status.item(item_id, "values")
+        st_text = current_vals[3] if len(current_vals) > 3 else ""
+
+        # Se deu erro, está sem chave ou offline, abre a modal imediatamente ao clicar
+        if any(kw in st_text for kw in ("Erro", "Sem Chave", "Inativo", "Offline", "Falha")):
+            self.show_provider_details_modal(item_id)
+
+    def _on_status_table_double_click(self, event):
+        """Ao dar duplo clique em qualquer provedor da tabela, abre a modal de detalhes."""
+        region = self.tree_status.identify_region(event.x, event.y)
+        if region not in ("cell", "tree", "item"):
+            return
+        item_id = self.tree_status.identify_row(event.y)
+        if item_id:
+            self.show_provider_details_modal(item_id)
+
+    def _on_status_table_motion(self, event):
+        """Muda o cursor para 'hand2' (mãozinha) ao passar o mouse sobre provedores com erro na lista."""
+        item_id = self.tree_status.identify_row(event.y)
+        region = self.tree_status.identify_region(event.x, event.y)
+        if item_id and region in ("cell", "tree", "item"):
+            current_vals = self.tree_status.item(item_id, "values")
+            st_text = current_vals[3] if len(current_vals) > 3 else ""
+            if any(kw in st_text for kw in ("Erro", "Sem Chave", "Inativo", "Offline", "Falha")):
+                self.tree_status.config(cursor="hand2")
+                return
+        self.tree_status.config(cursor="")
+
+    def _on_view_selected_status_details(self):
+        """Abre a modal de detalhes para o item selecionado ou o primeiro item com erro."""
+        selected = self.tree_status.selection()
+        target_id = selected[0] if selected else None
+
+        if not target_id:
+            for item_id in self.tree_status.get_children():
+                vals = self.tree_status.item(item_id, "values")
+                st = vals[3] if len(vals) > 3 else ""
+                if any(kw in st for kw in ("Erro", "Sem Chave", "Offline")):
+                    target_id = item_id
+                    break
+
+        if not target_id and app_config.providers:
+            target_id = app_config.providers[0].id
+
+        if target_id:
+            self.tree_status.selection_set(target_id)
+            self.show_provider_details_modal(target_id)
+        else:
+            messagebox.showinfo("Informação", "Nenhum provedor disponível para exibir detalhes.")
+
+    def _diagnose_provider_health(
+        self, r: Optional[Any], p: Optional[ProviderConfig]
+    ) -> Tuple[str, str, str, str]:
+        """
+        Analisa o resultado da verificação ou estado do provedor e retorna:
+        (badge_text, cor_destaque, titulo_diagnostico, explicacao_amigavel)
+        """
+        if not p:
+            return "❓ Desconhecido", FG_SUBTEXT, "Provedor Não Encontrado", "Este provedor não consta no config.json."
+
+        if not p.enabled or (r and r.status == "disabled"):
+            return (
+                "⚪ Inativo",
+                FG_SUBTEXT,
+                "Provedor Desativado",
+                "Este provedor está desabilitado no config.json e não participará do roteamento ou fallback. Para reativá-lo, use a aba 'Configurações de Provedores'.",
+            )
+
+        if p.is_placeholder() or (r and r.status == "placeholder"):
+            return (
+                "🟡 Sem Chave de API",
+                ACCENT_YELLOW,
+                "Chave de API Ausente ou Inválida",
+                "O provedor está configurado com chave vazia ou o valor de exemplo ('sua_chave_aqui'). Adicione sua chave real na aba 'Configurações de Provedores' para ativá-lo.",
+            )
+
+        if r:
+            status_code = getattr(r, "status_code", None)
+            err_msg = getattr(r, "error_message", "") or ""
+            raw = getattr(r, "raw_response", "") or ""
+            combined = f"{err_msg} {raw}".lower()
+
+            if r.status == "online":
+                lat = f"{r.latency_ms}ms" if r.latency_ms is not None else ""
+                return (
+                    "🟢 Online",
+                    ACCENT_GREEN,
+                    "Provedor 100% Operacional",
+                    f"A API respondeu com sucesso ao teste de chat completion ({lat}). O provedor está ativo e pronto para atender requisições.",
+                )
+
+            if status_code == 401 or "401" in err_msg or "unauthorized" in combined or "invalid_api_key" in combined or "incorrect api key" in combined:
+                return (
+                    "🔴 Erro 401 (Não Autorizado)",
+                    ACCENT_RED,
+                    "Chave de API Inválida ou Expirada",
+                    "A chave de API informada foi recusada pelo provedor. Verifique se copiou a chave correta sem espaços ou se ela possui créditos ativos no painel do serviço.",
+                )
+
+            if status_code == 403 or "403" in err_msg or "forbidden" in combined or "permission" in combined or "access_denied" in combined:
+                return (
+                    "🔴 Erro 403 (Acesso Proibido)",
+                    ACCENT_RED,
+                    "Acesso Negado pelo Provedor",
+                    "A conta não tem permissão para acessar este modelo ou endpoint. Pode ser necessário habilitar o modelo no painel do provedor ou aceitar termos de uso.",
+                )
+
+            if status_code == 404 or "404" in err_msg or "not_found" in combined or "model_not_found" in combined:
+                return (
+                    "🔴 Erro 404 (Não Encontrado)",
+                    ACCENT_RED,
+                    "Modelo ou Endpoint Incorreto",
+                    f"O modelo '{p.model}' não foi encontrado no catálogo do provedor ou a Base URL está incorreta (verifique se requer terminação '/v1').",
+                )
+
+            if status_code == 429 or "429" in err_msg or "rate limit" in combined or "quota" in combined or "insufficient_quota" in combined:
+                return (
+                    "🔴 Erro 429 (Limite Excedido)",
+                    ACCENT_RED,
+                    "Cota Esgotada ou Rate Limit",
+                    "O limite de requisições por minuto (RPM) ou os créditos gratuitos da conta foram atingidos. Aguarde alguns instantes ou recarregue créditos.",
+                )
+
+            if status_code and status_code >= 500:
+                return (
+                    f"🔴 Erro {status_code} (Falha no Servidor)",
+                    ACCENT_RED,
+                    "Instabilidade nos Servidores do Provedor",
+                    f"O servidor externo do provedor retornou código {status_code}. O serviço deles pode estar passando por instabilidade ou manutenção temporária.",
+                )
+
+            if "timeout" in combined or (r.status == "offline" and "timeout" in err_msg.lower()):
+                return (
+                    "🔴 Timeout (Tempo Esgotado)",
+                    ACCENT_RED,
+                    "Servidor Não Respondeu a Tempo",
+                    "A requisição demorou mais de 10 segundos sem retorno. A API do provedor pode estar lenta ou bloqueada por firewall/proxy de rede.",
+                )
+
+            if "connect" in combined or "getaddrinfo" in combined or "name resolution" in combined:
+                return (
+                    "🔴 Falha de Conexão",
+                    ACCENT_RED,
+                    "Não Foi Possível Conectar ao Host",
+                    "Falha ao resolver o domínio DNS ou conectar ao servidor. Verifique a URL do endpoint configurado e sua conexão com a internet.",
+                )
+
+            return (
+                "🔴 Falha na API",
+                ACCENT_RED,
+                "Erro na Chamada de Teste",
+                "O provedor retornou um erro ao responder à requisição. Veja os detalhes técnicos retornados pelo servidor na caixa abaixo.",
+            )
+
+        return (
+            "⏳ Status Pendente",
+            ACCENT_YELLOW,
+            "Aguardando Verificação",
+            "Este provedor ainda não foi testado nesta sessão. Clique no botão 'Testar Novamente' abaixo para verificar a conexão agora.",
+        )
+
+    def show_provider_details_modal(self, provider_id: str):
+        """Abre uma janela modal moderna e compacta exibindo o motivo detalhado e diagnóstico do erro do provedor."""
+        p = app_config.get_provider(provider_id)
+        if not p:
+            messagebox.showwarning("Aviso", f"Provedor '{provider_id}' não encontrado.")
+            return
+
+        if getattr(self, "active_details_modal", None):
+            try:
+                self.active_details_modal.destroy()
+            except Exception:
+                pass
+
+        modal = tk.Toplevel(self.root)
+        modal.title(f"Status & Diagnóstico - {p.name}")
+        modal.geometry("570x530")
+        modal.minsize(500, 440)
+        modal.configure(bg=BG_DARK)
+        modal.transient(self.root)
+        modal.grab_set()
+
+        self.active_details_modal = modal
+        self.active_details_prov_id = provider_id
+
+        def _on_close():
+            self.active_details_modal = None
+            self.active_details_prov_id = None
+            self._active_modal_update_fn = None
+            modal.destroy()
+
+        modal.protocol("WM_DELETE_WINDOW", _on_close)
+        modal.bind("<Escape>", lambda e: _on_close())
+
+        try:
+            x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 285
+            y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 265
+            modal.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+
+        container = tk.Frame(modal, bg=BG_DARK, padx=14, pady=12)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        # Cabeçalho
+        hdr_frame = tk.Frame(container, bg=BG_PANEL, padx=14, pady=10)
+        hdr_frame.pack(fill=tk.X, pady=(0, 10))
+
+        lbl_hdr_badge = tk.Label(hdr_frame, text="", font=FONT_TITLE, bg=BG_PANEL)
+        lbl_hdr_badge.pack(anchor=tk.W)
+
+        lbl_hdr_sub = tk.Label(
+            hdr_frame,
+            text=f"Provedor: {p.name} ({p.id})  |  Modelo Ativo: {p.model}",
+            font=FONT_MAIN,
+            fg=FG_SUBTEXT,
+            bg=BG_PANEL,
+        )
+        lbl_hdr_sub.pack(anchor=tk.W, pady=(2, 0))
+
+        # Quadro de informações rápidas (Status, Latência, Horário, Endpoint)
+        grid_frame = tk.Frame(container, bg=BG_PANEL, padx=12, pady=8)
+        grid_frame.pack(fill=tk.X, pady=(0, 10))
+
+        lbl_quick_status = tk.Label(grid_frame, text="", font=FONT_BOLD, bg=BG_PANEL)
+        lbl_quick_status.grid(row=0, column=0, sticky=tk.W, pady=2)
+
+        lbl_quick_latency = tk.Label(grid_frame, text="", font=FONT_MAIN, fg=FG_TEXT, bg=BG_PANEL)
+        lbl_quick_latency.grid(row=0, column=1, sticky=tk.W, padx=(20, 0), pady=2)
+
+        lbl_quick_time = tk.Label(grid_frame, text="", font=FONT_MAIN, fg=FG_SUBTEXT, bg=BG_PANEL)
+        lbl_quick_time.grid(row=0, column=2, sticky=tk.W, padx=(20, 0), pady=2)
+
+        lbl_quick_url = tk.Label(
+            grid_frame,
+            text=f"Base URL: {p.base_url}",
+            font=("Segoe UI", 9),
+            fg=FG_SUBTEXT,
+            bg=BG_PANEL,
+            wraplength=510,
+            justify=tk.LEFT,
+        )
+        lbl_quick_url.grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(4, 0))
+
+        # Banner de Diagnóstico Inteligente
+        diag_frame = tk.Frame(container, bg=BG_INPUT, padx=12, pady=10)
+        diag_frame.pack(fill=tk.X, pady=(0, 10))
+
+        lbl_diag_title = tk.Label(diag_frame, text="", font=FONT_BOLD, bg=BG_INPUT)
+        lbl_diag_title.pack(anchor=tk.W)
+
+        lbl_diag_desc = tk.Label(
+            diag_frame,
+            text="",
+            font=FONT_MAIN,
+            fg=FG_TEXT,
+            bg=BG_INPUT,
+            wraplength=510,
+            justify=tk.LEFT,
+        )
+        lbl_diag_desc.pack(anchor=tk.W, pady=(4, 0))
+
+        # Caixa de Detalhes Técnicos / Resposta Bruta
+        tk.Label(
+            container,
+            text="🔍 Detalhes Técnicos / Resposta do Servidor:",
+            font=FONT_BOLD,
+            fg=ACCENT_BLUE,
+            bg=BG_DARK,
+        ).pack(anchor=tk.W, pady=(0, 4))
+
+        text_details = scrolledtext.ScrolledText(
+            container,
+            wrap=tk.WORD,
+            bg="#11111b",
+            fg=FG_TEXT,
+            insertbackground=FG_TEXT,
+            font=FONT_CODE,
+            relief=tk.FLAT,
+            height=7,
+            padx=10,
+            pady=8,
+        )
+        text_details.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        def _update_modal_content():
+            current_p = app_config.get_provider(provider_id) or p
+            r = self.provider_health_details.get(provider_id) or router.get_provider_health(provider_id)
+
+            badge_text, accent_color, diag_title, diag_desc = self._diagnose_provider_health(r, current_p)
+
+            lbl_hdr_badge.config(text=f"{badge_text} - {current_p.name}", fg=accent_color)
+            lbl_hdr_sub.config(text=f"Provedor: {current_p.name} ({current_p.id})  |  Modelo Ativo: {current_p.model}")
+
+            lat_text = f"⏱️ Latência: {r.latency_ms}ms" if (r and r.latency_ms is not None) else "⏱️ Latência: -"
+            time_text = f"🕒 Testado às: {r.checked_at}" if (r and getattr(r, 'checked_at', None)) else "🕒 Testado às: -"
+            st_str = f"Status: {r.status.upper()}" if r else "Status: -"
+            if r and getattr(r, "status_code", None):
+                st_str += f" (HTTP {r.status_code})"
+
+            lbl_quick_status.config(text=st_str, fg=accent_color)
+            lbl_quick_latency.config(text=lat_text)
+            lbl_quick_time.config(text=time_text)
+            lbl_quick_url.config(text=f"Base URL: {current_p.base_url}")
+
+            lbl_diag_title.config(text=f"💡 {diag_title}", fg=accent_color)
+            lbl_diag_desc.config(text=diag_desc)
+
+            details_content = ""
+            if r:
+                if getattr(r, "error_message", None):
+                    details_content += f"Mensagem de Erro:\n{r.error_message}\n\n"
+                if getattr(r, "raw_response", None):
+                    raw_str = r.raw_response
+                    try:
+                        parsed = json.loads(raw_str)
+                        raw_str = json.dumps(parsed, indent=2, ensure_ascii=False)
+                    except Exception:
+                        pass
+                    details_content += f"Corpo da Resposta do Servidor:\n{raw_str}"
+                elif not getattr(r, "error_message", None):
+                    details_content = (
+                        f"Resposta 200 OK do endpoint oficial.\n"
+                        f"Provedor: {current_p.name}\n"
+                        f"Modelo testado: {r.model or current_p.model}\n"
+                        f"Latência aferida: {r.latency_ms}ms"
+                    )
+            else:
+                if not current_p.enabled:
+                    details_content = "Provedor desativado no momento. Nenhuma requisição recente realizada."
+                elif current_p.is_placeholder():
+                    details_content = "Chave de API não configurada. A API não pôde ser consultada."
+                else:
+                    details_content = "Nenhuma verificação recente registrada para este provedor."
+
+            text_details.config(state=tk.NORMAL)
+            text_details.delete("1.0", tk.END)
+            text_details.insert(tk.END, details_content.strip())
+            text_details.config(state=tk.DISABLED)
+
+        self._active_modal_update_fn = _update_modal_content
+
+        # Rodapé com Ações
+        btn_bar = tk.Frame(container, bg=BG_DARK)
+        btn_bar.pack(fill=tk.X)
+
+        btn_retest = tk.Button(
+            btn_bar,
+            text="🔄 Testar Novamente",
+            font=FONT_BOLD,
+            fg="#11111b",
+            bg=ACCENT_BLUE,
+            activebackground="#b4befe",
+            relief=tk.FLAT,
+            padx=10,
+            pady=5,
+            cursor="hand2",
+        )
+        btn_retest.pack(side=tk.LEFT, padx=(0, 6))
+
+        def _on_retest():
+            btn_retest.config(text="⏳ Testando...", state=tk.DISABLED)
+            def _worker():
+                current_p = app_config.get_provider(provider_id)
+                if current_p:
+                    res = asyncio.run(router.check_provider_health(current_p, timeout=12.0))
+                    self.gui_queue.put(("health_single_result", res))
+                def _done():
+                    if modal.winfo_exists():
+                        btn_retest.config(text="🔄 Testar Novamente", state=tk.NORMAL)
+                        _update_modal_content()
+                self.root.after(100, _done)
+            threading.Thread(target=_worker, daemon=True).start()
+
+        btn_retest.config(command=_on_retest)
+
+        def _on_goto_config():
+            _on_close()
+            self.notebook.select(self.tab_providers)
+            if hasattr(self, "tree_prov_list") and self.tree_prov_list.exists(provider_id):
+                self.tree_prov_list.selection_set(provider_id)
+                self._load_provider_into_form(provider_id)
+
+        tk.Button(
+            btn_bar,
+            text="✏️ Ir para Configurações",
+            command=_on_goto_config,
+            font=FONT_MAIN,
+            fg="#11111b",
+            bg=ACCENT_YELLOW,
+            activebackground="#f9e2af",
+            relief=tk.FLAT,
+            padx=10,
+            pady=5,
+            cursor="hand2",
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        def _on_copy():
+            text = text_details.get("1.0", tk.END).strip()
+            if text:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text)
+                messagebox.showinfo("Copiado", "Detalhes copiados para a área de transferência!", parent=modal)
+
+        tk.Button(
+            btn_bar,
+            text="📋 Copiar Erro",
+            command=_on_copy,
+            font=FONT_MAIN,
+            fg=FG_TEXT,
+            bg=BG_INPUT,
+            activebackground=BG_PANEL,
+            relief=tk.FLAT,
+            padx=8,
+            pady=5,
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
+
+        tk.Button(
+            btn_bar,
+            text="Fechar",
+            command=_on_close,
+            font=FONT_BOLD,
+            fg="#11111b",
+            bg=ACCENT_RED,
+            activebackground="#f38ba8",
+            relief=tk.FLAT,
+            padx=14,
+            pady=5,
+            cursor="hand2",
+        ).pack(side=tk.RIGHT)
+
+        _update_modal_content()
+
+    # ==========================================================================
     # LÓGICA GERAL & CHAT
     # ==========================================================================
     def _update_combo_options(self):
@@ -1534,8 +2015,28 @@ class LLMFallbackGUI:
             valid_ids.add(p.id)
             if not p.enabled:
                 st = "⚪ Inativo"
+                if p.id not in self.provider_health_details:
+                    self.provider_health_details[p.id] = HealthResult(
+                        provider_id=p.id,
+                        name=p.name,
+                        base_url=p.base_url,
+                        status="disabled",
+                        error_message="Desabilitado no config.json",
+                        model=p.model,
+                        checked_at=time.strftime("%H:%M:%S"),
+                    )
             elif p.is_placeholder():
                 st = "🟡 Sem Chave"
+                if p.id not in self.provider_health_details:
+                    self.provider_health_details[p.id] = HealthResult(
+                        provider_id=p.id,
+                        name=p.name,
+                        base_url=p.base_url,
+                        status="placeholder",
+                        error_message="Chave de API não configurada",
+                        model=p.model,
+                        checked_at=time.strftime("%H:%M:%S"),
+                    )
             else:
                 st = "⏳ Verificando..."
 
@@ -1680,6 +2181,7 @@ class LLMFallbackGUI:
                 if msg_type in ("health_results", "health_single_result"):
                     items = data if msg_type == "health_results" else [data]
                     for r in items:
+                        self.provider_health_details[r.provider_id] = r
                         prov = app_config.get_provider(r.provider_id)
                         m_str = (prov.model if prov else "-")
                         lat_str = f"{r.latency_ms}ms" if r.latency_ms is not None else "-"
@@ -1695,6 +2197,13 @@ class LLMFallbackGUI:
                             self.tree_status.insert("", tk.END, iid=r.provider_id, values=(r.name, m_str, lat_str, st_str))
                         else:
                             self.tree_status.item(r.provider_id, values=(r.name, m_str, lat_str, st_str))
+
+                        # Se a modal estiver aberta para este provedor, atualiza em tempo real
+                        if getattr(self, "active_details_prov_id", None) == r.provider_id and hasattr(self, "_active_modal_update_fn") and callable(self._active_modal_update_fn):
+                            try:
+                                self._active_modal_update_fn()
+                            except Exception:
+                                pass
 
                 elif msg_type == "set_last_provider":
                     self.last_used_provider_id = data
@@ -1745,6 +2254,15 @@ class LLMFallbackGUI:
 
                 elif msg_type == "bus_log":
                     self._append_console_event(data)
+                    level = (data.get("level") or data.get("category") or "").upper()
+                    if level in ("FALLBACK", "WARN"):
+                        msg = data.get("message", "")
+                        for p in app_config.providers:
+                            if p.name.lower() in msg.lower() or p.id.lower() in msg.lower():
+                                if self.tree_status.exists(p.id):
+                                    current_vals = list(self.tree_status.item(p.id, "values"))
+                                    current_vals[3] = "🔴 Erro"
+                                    self.tree_status.item(p.id, values=current_vals)
 
         except Exception:
             pass
