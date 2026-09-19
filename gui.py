@@ -9,6 +9,7 @@ Contém:
 import asyncio
 import json
 import queue
+import re
 import secrets
 import socket
 import sys
@@ -548,10 +549,38 @@ class LLMFallbackGUI:
 
         self.console_text.insert(tk.END, f"[{time_str}] ", "time_tag")
         self.console_text.insert(tk.END, f"[{level}] ", tag)
-        self.console_text.insert(tk.END, f"{message}\n", tag)
+        self.console_text.insert(tk.END, f"{message}", tag)
+
+        # Se houver comando cURL nos detalhes, adiciona um link interativo [Detalhes]
+        curl_cmd = details.get("curl") if isinstance(details, dict) else None
+        if curl_cmd:
+            link_tag = f"curl_tag_{id(event)}_{time.time()}_{len(self.console_text.get('1.0', tk.END))}"
+            self.console_text.insert(tk.END, "  ")
+            self.console_text.insert(tk.END, "[Detalhes]", link_tag)
+            self.console_text.tag_config(
+                link_tag,
+                foreground=ACCENT_BLUE,
+                underline=True,
+                font=("Consolas", 10, "bold"),
+            )
+            self.console_text.tag_bind(
+                link_tag, "<Enter>", lambda e: self.console_text.config(cursor="hand2")
+            )
+            self.console_text.tag_bind(
+                link_tag, "<Leave>", lambda e: self.console_text.config(cursor="")
+            )
+            self.console_text.tag_bind(
+                link_tag,
+                "<Button-1>",
+                lambda e, d=details: self.show_curl_modal(d),
+            )
+
+        self.console_text.insert(tk.END, "\n")
 
         if details and isinstance(details, dict):
             for k, v in details.items():
+                if k in ("curl", "payload", "provider", "model", "url"):
+                    continue
                 self.console_text.insert(tk.END, f"      ↳ {k}: {v}\n", "detail_tag")
 
         if hasattr(self, "console_autoscroll_var") and self.console_autoscroll_var.get():
@@ -1513,6 +1542,257 @@ class LLMFallbackGUI:
         ).pack(side=tk.RIGHT)
 
         _update_view()
+
+    def _render_syntax_highlighted_json(self, text_widget: scrolledtext.ScrolledText, obj: Any):
+        """Renderiza um dicionário/objeto JSON formatado e com coloração sintática para facilitar a leitura."""
+        text_widget.config(state=tk.NORMAL)
+        text_widget.delete("1.0", tk.END)
+
+        text_widget.tag_config("j_key", foreground="#89b4fa", font=("Consolas", 10, "bold"))
+        text_widget.tag_config("j_str", foreground="#a6e3a1")
+        text_widget.tag_config("j_num", foreground="#fab387")
+        text_widget.tag_config("j_bool", foreground="#cba6f7", font=("Consolas", 10, "bold"))
+        text_widget.tag_config("j_punct", foreground="#6c7086")
+        text_widget.tag_config("j_text", foreground="#cdd6f4")
+
+        if obj is None:
+            text_widget.insert(tk.END, "# Nenhum payload disponível para exibição.", "j_punct")
+            text_widget.config(state=tk.DISABLED)
+            return
+
+        try:
+            raw_json = json.dumps(obj, indent=2, ensure_ascii=False)
+        except Exception:
+            raw_json = str(obj)
+
+        token_re = re.compile(
+            r'("(?:\\.|[^"\\])*")(\s*:)?|(\btrue\b|\bfalse\b|\bnull\b)|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|([\{\}\[\],:])'
+        )
+
+        lines = raw_json.split("\n")
+        for i, line in enumerate(lines):
+            last_idx = 0
+            for m in token_re.finditer(line):
+                start, end = m.span()
+                if start > last_idx:
+                    text_widget.insert(tk.END, line[last_idx:start], "j_text")
+
+                if m.group(1) and m.group(2):
+                    text_widget.insert(tk.END, m.group(1), "j_key")
+                    text_widget.insert(tk.END, m.group(2), "j_punct")
+                elif m.group(1):
+                    text_widget.insert(tk.END, m.group(1), "j_str")
+                elif m.group(3):
+                    text_widget.insert(tk.END, m.group(3), "j_bool")
+                elif m.group(4):
+                    text_widget.insert(tk.END, m.group(4), "j_num")
+                elif m.group(5):
+                    text_widget.insert(tk.END, m.group(5), "j_punct")
+                last_idx = end
+
+            if last_idx < len(line):
+                text_widget.insert(tk.END, line[last_idx:], "j_text")
+
+            if i < len(lines) - 1:
+                text_widget.insert(tk.END, "\n")
+
+        text_widget.config(state=tk.DISABLED)
+
+    def show_curl_modal(self, details: dict):
+        """Abre uma modal moderna com visualizador JSON formatado e comando cURL enviado ao provedor."""
+        if not details or not isinstance(details, dict):
+            return
+
+        curl_cmd = details.get("curl", "")
+        provider_name = details.get("provider", "Provedor")
+        model_name = details.get("model", "-")
+        url = details.get("url", "-")
+        payload = details.get("payload")
+
+        # Fallback para extrair o payload do comando cURL caso não esteja disponível diretamente
+        if not payload and curl_cmd and " -d '" in curl_cmd:
+            try:
+                raw_json = curl_cmd.split(" -d '", 1)[1].rsplit("'", 1)[0]
+                payload = json.loads(raw_json)
+            except Exception:
+                pass
+
+        modal = tk.Toplevel(self.root)
+        modal.title(f"Inspeção de Requisição - {provider_name}")
+        modal.geometry("840x580")
+        modal.minsize(680, 420)
+        modal.configure(bg=BG_DARK)
+        modal.transient(self.root)
+
+        try:
+            x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 420
+            y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 290
+            modal.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+
+        # Cabeçalho
+        hdr = tk.Frame(modal, bg=BG_PANEL, padx=16, pady=12)
+        hdr.pack(fill=tk.X)
+
+        tk.Label(
+            hdr,
+            text=f"🌐 Requisição Enviada: {provider_name}",
+            font=FONT_TITLE,
+            fg=ACCENT_BLUE,
+            bg=BG_PANEL,
+        ).pack(anchor=tk.W)
+
+        sub_info = f"🤖 Modelo: {model_name}   |   🔗 Endpoint: {url}"
+        tk.Label(
+            hdr,
+            text=sub_info,
+            font=FONT_MAIN,
+            fg=FG_SUBTEXT,
+            bg=BG_PANEL,
+        ).pack(anchor=tk.W, pady=(4, 0))
+
+        # Container Principal com Notebook (Abas)
+        body = tk.Frame(modal, bg=BG_DARK, padx=14, pady=10)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        notebook = ttk.Notebook(body)
+        notebook.pack(fill=tk.BOTH, expand=True)
+
+        # -------------------------------------------------------------
+        # ABA 1: JSON View Formatado (Foco na Leitura)
+        # -------------------------------------------------------------
+        tab_json = tk.Frame(notebook, bg=BG_DARK, padx=8, pady=8)
+        notebook.add(tab_json, text="  📄 JSON do Payload (Leitura Facilitada)  ")
+
+        json_bar = tk.Frame(tab_json, bg=BG_DARK)
+        json_bar.pack(fill=tk.X, pady=(0, 6))
+
+        msg_count = len(payload.get("messages", [])) if (isinstance(payload, dict) and "messages" in payload) else 0
+        stream_txt = "Sim" if (isinstance(payload, dict) and payload.get("stream")) else "Não"
+        meta_label = f"Corpo JSON enviado (Mensagens: {msg_count} | Stream: {stream_txt}):"
+        tk.Label(
+            json_bar,
+            text=meta_label,
+            font=FONT_BOLD,
+            fg=ACCENT_GREEN,
+            bg=BG_DARK,
+        ).pack(side=tk.LEFT)
+
+        text_json = scrolledtext.ScrolledText(
+            tab_json,
+            wrap=tk.WORD,
+            bg="#11111b",
+            fg=FG_TEXT,
+            insertbackground=FG_TEXT,
+            font=("Consolas", 10),
+            relief=tk.FLAT,
+            padx=12,
+            pady=10,
+        )
+        text_json.pack(fill=tk.BOTH, expand=True)
+        self._render_syntax_highlighted_json(text_json, payload)
+
+        # -------------------------------------------------------------
+        # ABA 2: Comando cURL Completo
+        # -------------------------------------------------------------
+        tab_curl = tk.Frame(notebook, bg=BG_DARK, padx=8, pady=8)
+        notebook.add(tab_curl, text="  💻 Comando cURL Completo  ")
+
+        curl_bar = tk.Frame(tab_curl, bg=BG_DARK)
+        curl_bar.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(
+            curl_bar,
+            text="Comando pronto para reprodução direta no terminal (Bash / PowerShell):",
+            font=FONT_BOLD,
+            fg=ACCENT_YELLOW,
+            bg=BG_DARK,
+        ).pack(side=tk.LEFT)
+
+        text_curl = scrolledtext.ScrolledText(
+            tab_curl,
+            wrap=tk.CHAR,
+            bg="#11111b",
+            fg="#89dceb",
+            insertbackground=FG_TEXT,
+            font=("Consolas", 10),
+            relief=tk.FLAT,
+            padx=12,
+            pady=10,
+        )
+        text_curl.pack(fill=tk.BOTH, expand=True)
+        text_curl.insert("1.0", curl_cmd)
+        text_curl.config(state=tk.NORMAL)
+
+        # Rodapé com Botões de Ação
+        footer = tk.Frame(modal, bg=BG_PANEL, padx=16, pady=10)
+        footer.pack(fill=tk.X)
+
+        lbl_status = tk.Label(footer, text="", font=FONT_MAIN, fg=ACCENT_GREEN, bg=BG_PANEL)
+        lbl_status.pack(side=tk.LEFT)
+
+        def _copy_curl():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(curl_cmd)
+            lbl_status.config(text="✅ Comando cURL copiado com sucesso!")
+            modal.after(2500, lambda: lbl_status.config(text="") if modal.winfo_exists() else None)
+
+        def _copy_json():
+            if payload:
+                text_formatted = json.dumps(payload, indent=2, ensure_ascii=False)
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text_formatted)
+                lbl_status.config(text="✅ JSON do payload copiado com sucesso!")
+                modal.after(2500, lambda: lbl_status.config(text="") if modal.winfo_exists() else None)
+
+        btn_close = tk.Button(
+            footer,
+            text="Fechar",
+            command=modal.destroy,
+            font=FONT_BOLD,
+            fg="#11111b",
+            bg=ACCENT_RED,
+            activebackground="#f38ba8",
+            relief=tk.FLAT,
+            padx=16,
+            pady=4,
+            cursor="hand2",
+        )
+        btn_close.pack(side=tk.RIGHT, padx=(8, 0))
+
+        btn_curl_copy = tk.Button(
+            footer,
+            text="📋 Copiar cURL",
+            command=_copy_curl,
+            font=FONT_BOLD,
+            fg="#11111b",
+            bg=ACCENT_YELLOW,
+            activebackground="#f9e2af",
+            relief=tk.FLAT,
+            padx=14,
+            pady=4,
+            cursor="hand2",
+        )
+        btn_curl_copy.pack(side=tk.RIGHT, padx=(0, 6))
+
+        if payload:
+            btn_json_copy = tk.Button(
+                footer,
+                text="📄 Copiar JSON",
+                command=_copy_json,
+                font=FONT_BOLD,
+                fg="#11111b",
+                bg=ACCENT_BLUE,
+                activebackground="#b4befe",
+                relief=tk.FLAT,
+                padx=14,
+                pady=4,
+                cursor="hand2",
+            )
+            btn_json_copy.pack(side=tk.RIGHT, padx=(0, 6))
+
+        modal.bind("<Escape>", lambda e: modal.destroy())
 
     # ==========================================================================
     # MODAL DE DETALHES & DIAGNÓSTICO DE ERROS DE PROVEDORES

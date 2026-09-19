@@ -36,6 +36,13 @@ class HealthResult:
     raw_response: Optional[str] = None
 
 
+def build_curl_command(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> str:
+    """Monta o comando cURL equivalente à requisição HTTP direta ao provedor."""
+    headers_cmd = " ".join([f'-H "{k}: {v}"' for k, v in headers.items()])
+    json_str = json.dumps(payload, ensure_ascii=False)
+    return f'curl -N -X POST "{url}" {headers_cmd} -d \'{json_str}\''
+
+
 class LLMRouter:
     """Roteador inteligente com fallback entre provedores."""
 
@@ -223,8 +230,19 @@ class LLMRouter:
                 "Content-Type": "application/json",
             }
             url = f"{provider.base_url.rstrip('/')}/chat/completions"
+            curl_cmd = build_curl_command(url, headers, req_payload)
 
-            bus_logger.emit("INFO", f"Tentando {provider.name} ({target_model}) | stream={stream}")
+            bus_logger.emit(
+                "INFO",
+                f"Tentando {provider.name} ({target_model}) | stream={stream}",
+                details={
+                    "curl": curl_cmd,
+                    "provider": provider.name,
+                    "model": target_model,
+                    "url": url,
+                    "payload": req_payload,
+                },
+            )
 
             try:
                 if stream:
