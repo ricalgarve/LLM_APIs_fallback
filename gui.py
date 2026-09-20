@@ -50,8 +50,8 @@ class LLMFallbackGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("Barramento de Fallback de LLMs - OpenAI Localhost API")
-        self.root.geometry("1180x740")
-        self.root.minsize(980, 620)
+        self.root.geometry("1260x860")
+        self.root.minsize(1020, 680)
         self.root.configure(bg=BG_DARK)
 
         self.gui_queue = queue.Queue()
@@ -672,11 +672,42 @@ class LLMFallbackGUI:
         ).pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(4, 0))
 
         # Lado Direito: Formulário de Edição
-        right_box = tk.Frame(container, bg=BG_PANEL, padx=16, pady=16)
+        right_box = tk.Frame(container, bg=BG_PANEL, padx=16, pady=14)
         right_box.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
-        tk.Label(right_box, text="📝 Configurações do Provedor Selecionado", font=FONT_SUBTITLE, fg=ACCENT_BLUE, bg=BG_PANEL).pack(anchor=tk.W, pady=(0, 4))
-        tk.Label(right_box, text="Edite o nome, ative/desative ou altere chaves e modelos deste provedor:", font=FONT_MAIN, fg=FG_SUBTEXT, bg=BG_PANEL).pack(anchor=tk.W, pady=(0, 10))
+        tk.Label(right_box, text="📝 Configurações do Provedor Selecionado", font=FONT_SUBTITLE, fg=ACCENT_BLUE, bg=BG_PANEL).pack(anchor=tk.W, pady=(0, 2))
+        tk.Label(right_box, text="Edite o nome, ative/desative ou altere chaves e modelos deste provedor:", font=FONT_MAIN, fg=FG_SUBTEXT, bg=BG_PANEL).pack(anchor=tk.W, pady=(0, 8))
+
+        # Botões de Ação do formulário FIXADOS no rodapé do painel (garante 100% de visibilidade sempre)
+        action_bar = tk.Frame(right_box, bg=BG_PANEL)
+        action_bar.pack(side=tk.BOTTOM, fill=tk.X, pady=(10, 0))
+
+        tk.Button(
+            action_bar,
+            text="💾 Salvar Alterações no config.json",
+            command=self._save_current_provider,
+            font=FONT_BOLD,
+            fg="#11111b",
+            bg=ACCENT_GREEN,
+            activebackground="#a6e3a1",
+            relief=tk.FLAT,
+            padx=16,
+            pady=8,
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
+
+        tk.Button(
+            action_bar,
+            text="🔍 Testar Este Provedor",
+            command=self._test_selected_provider,
+            font=FONT_BOLD,
+            fg="#11111b",
+            bg=ACCENT_BLUE,
+            relief=tk.FLAT,
+            padx=14,
+            pady=8,
+            cursor="hand2",
+        ).pack(side=tk.LEFT, padx=(10, 0))
 
         form_frame = tk.Frame(right_box, bg=BG_PANEL)
         form_frame.pack(fill=tk.BOTH, expand=True)
@@ -696,7 +727,7 @@ class LLMFallbackGUI:
             activebackground=BG_PANEL,
             selectcolor=BG_INPUT,
             cursor="hand2",
-        ).grid(row=2, column=0, sticky=tk.W, pady=(4, 10))
+        ).grid(row=2, column=0, sticky=tk.W, pady=(3, 8))
 
         # 3. ID do Provedor
         self.entry_prov_id = self._create_form_field(form_frame, "ID Interno (ex: nvidia, groq):", 2)
@@ -705,13 +736,13 @@ class LLMFallbackGUI:
         self.entry_prov_url = self._create_form_field(form_frame, "Base URL do Endpoint (OpenAI-compatible):", 3)
         
         # 5. API Key com botão de exibir/ocultar
-        tk.Label(form_frame, text="API Key / Token:", font=FONT_MAIN, fg=FG_TEXT, bg=BG_PANEL).grid(row=8, column=0, sticky=tk.W, pady=(6, 2))
+        tk.Label(form_frame, text="API Key / Token:", font=FONT_MAIN, fg=FG_TEXT, bg=BG_PANEL).grid(row=8, column=0, sticky=tk.W, pady=(4, 1))
         key_frame = tk.Frame(form_frame, bg=BG_PANEL)
-        key_frame.grid(row=9, column=0, sticky="ew", pady=(0, 6))
+        key_frame.grid(row=9, column=0, sticky="ew", pady=(0, 4))
         form_frame.columnconfigure(0, weight=1)
 
         self.entry_prov_key = tk.Entry(key_frame, bg=BG_INPUT, fg=FG_TEXT, insertbackground=FG_TEXT, font=FONT_MAIN, relief=tk.FLAT, show="•")
-        self.entry_prov_key.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=5)
+        self.entry_prov_key.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
 
         self.btn_toggle_eye = tk.Button(
             key_frame,
@@ -732,10 +763,10 @@ class LLMFallbackGUI:
             font=FONT_MAIN,
             fg=FG_TEXT,
             bg=BG_PANEL,
-        ).grid(row=10, column=0, sticky=tk.W, pady=(6, 2))
+        ).grid(row=10, column=0, sticky=tk.W, pady=(4, 1))
 
         model_row = tk.Frame(form_frame, bg=BG_PANEL)
-        model_row.grid(row=11, column=0, sticky="ew", pady=(0, 6))
+        model_row.grid(row=11, column=0, sticky="ew", pady=(0, 4))
 
         self.combo_prov_model = ttk.Combobox(model_row, font=FONT_MAIN, state="normal")
         self.combo_prov_model.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
@@ -777,18 +808,18 @@ class LLMFallbackGUI:
             font=FONT_MAIN,
             fg=FG_TEXT,
             bg=BG_PANEL,
-        ).grid(row=12, column=0, sticky=tk.W, pady=(6, 2))
+        ).grid(row=12, column=0, sticky=tk.W, pady=(4, 1))
 
         self.text_prov_headers = tk.Text(
             form_frame,
-            height=3,
+            height=2,
             font=FONT_CODE,
             bg=BG_INPUT,
             fg=FG_TEXT,
             insertbackground=FG_TEXT,
             relief=tk.FLAT,
             padx=8,
-            pady=5,
+            pady=4,
         )
         self.text_prov_headers.grid(row=13, column=0, sticky="ew", pady=(0, 2))
 
@@ -799,45 +830,14 @@ class LLMFallbackGUI:
             fg=FG_SUBTEXT,
             bg=BG_PANEL,
         )
-        lbl_hint_headers.grid(row=14, column=0, sticky=tk.W, pady=(0, 6))
-
-        # Botões de Ação do formulário
-        action_bar = tk.Frame(form_frame, bg=BG_PANEL)
-        action_bar.grid(row=15, column=0, sticky="ew", pady=(10, 0))
-
-        tk.Button(
-            action_bar,
-            text="💾 Salvar Alterações no config.json",
-            command=self._save_current_provider,
-            font=FONT_BOLD,
-            fg="#11111b",
-            bg=ACCENT_GREEN,
-            activebackground="#a6e3a1",
-            relief=tk.FLAT,
-            padx=14,
-            pady=7,
-            cursor="hand2",
-        ).pack(side=tk.LEFT)
-
-        tk.Button(
-            action_bar,
-            text="🔍 Testar Este Provedor",
-            command=self._test_selected_provider,
-            font=FONT_BOLD,
-            fg="#11111b",
-            bg=ACCENT_BLUE,
-            relief=tk.FLAT,
-            padx=12,
-            pady=7,
-            cursor="hand2",
-        ).pack(side=tk.LEFT, padx=(10, 0))
+        lbl_hint_headers.grid(row=14, column=0, sticky=tk.W, pady=(0, 4))
 
         self._refresh_providers_list()
 
     def _create_form_field(self, parent, label_text: str, row: int) -> tk.Entry:
-        tk.Label(parent, text=label_text, font=FONT_MAIN, fg=FG_TEXT, bg=BG_PANEL).grid(row=row*2, column=0, sticky=tk.W, pady=(6, 2))
+        tk.Label(parent, text=label_text, font=FONT_MAIN, fg=FG_TEXT, bg=BG_PANEL).grid(row=row*2, column=0, sticky=tk.W, pady=(4, 1))
         entry = tk.Entry(parent, bg=BG_INPUT, fg=FG_TEXT, insertbackground=FG_TEXT, font=FONT_MAIN, relief=tk.FLAT)
-        entry.grid(row=row*2+1, column=0, sticky="ew", pady=(0, 6), ipady=5)
+        entry.grid(row=row*2+1, column=0, sticky="ew", pady=(0, 4), ipady=4)
         return entry
 
     def _toggle_api_key_visibility(self):
