@@ -63,7 +63,7 @@ def start_server_in_thread(host: str, port: int) -> Optional[threading.Thread]:
 
 def print_banner(host: str, port: int):
     print("\n" + "=" * 70)
-    print(f"🚢 {APP_NAME.upper()} (v{__version__})")
+    print(f"{APP_NAME.upper()} (v{__version__})")
     print("=" * 70)
     print(f"📡 API Localhost Ativa  : http://{host}:{port}/v1/chat/completions")
     print(f"📋 Modelos Disponíveis  : http://{host}:{port}/v1/models")

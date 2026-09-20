@@ -268,6 +268,8 @@ class LLMRouter:
                 },
             )
 
+            start_time = time.perf_counter()
+
             try:
                 if stream:
                     # Para streaming, iniciamos a conexão e verificamos se respondeu 200 OK
@@ -287,13 +289,57 @@ class LLMRouter:
                         )
 
                         async def sse_generator() -> AsyncGenerator[str, None]:
+                            accumulated_content = []
+                            usage_info = {}
                             try:
                                 async for line in response.aiter_lines():
                                     if line:
+                                        if line.startswith("data: "):
+                                            raw_data = line[6:].strip()
+                                            if raw_data != "[DONE]":
+                                                try:
+                                                    parsed = json.loads(raw_data)
+                                                    choices = parsed.get("choices", [])
+                                                    if choices:
+                                                        delta = choices[0].get("delta", {})
+                                                        content_chunk = delta.get("content") or delta.get("reasoning_content") or ""
+                                                        if content_chunk:
+                                                            accumulated_content.append(content_chunk)
+                                                    if "usage" in parsed and parsed["usage"]:
+                                                        usage_info = parsed["usage"]
+                                                except Exception:
+                                                    pass
                                         yield f"{line}\n\n"
                             finally:
                                 await response.aclose()
                                 await client.aclose()
+                                elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
+                                full_response = "".join(accumulated_content)
+                                p_tokens = usage_info.get("prompt_tokens")
+                                c_tokens = usage_info.get("completion_tokens")
+                                if p_tokens is None:
+                                    p_tokens = max(1, sum(len(m.get("content", "")) for m in req_payload.get("messages", [])) // 4)
+                                if c_tokens is None:
+                                    c_tokens = max(1, len(full_response) // 4) if full_response else 0
+                                t_tokens = usage_info.get("total_tokens") or (p_tokens + c_tokens)
+
+                                bus_logger.emit(
+                                    "COMPLETION_FINISHED",
+                                    f"Streaming finalizado via {provider.name} ({target_model}) em {elapsed_ms}ms | {t_tokens} tokens",
+                                    details={
+                                        "provider": provider.name,
+                                        "model": target_model,
+                                        "latency_ms": elapsed_ms,
+                                        "stream": True,
+                                        "prompt": req_payload,
+                                        "response": full_response or "(Stream finalizado)",
+                                        "usage": {
+                                            "prompt_tokens": p_tokens,
+                                            "completion_tokens": c_tokens,
+                                            "total_tokens": t_tokens,
+                                        },
+                                    },
+                                )
 
                         bus_logger.emit("SUCCESS", f"Conexão de streaming estabelecida com {provider.name} ({provider.model})")
                         return sse_generator(), provider
@@ -321,6 +367,8 @@ class LLMRouter:
                     async with httpx.AsyncClient(timeout=timeout) as client:
                         response = await client.post(url, headers=headers, json=req_payload)
                         if response.status_code == 200:
+                            elapsed_ms = round((time.perf_counter() - start_time) * 1000, 1)
+                            res_json = response.json()
                             self.last_results[provider.id] = HealthResult(
                                 provider_id=provider.id,
                                 name=provider.name,
@@ -331,7 +379,41 @@ class LLMRouter:
                                 checked_at=time.strftime("%H:%M:%S"),
                             )
                             bus_logger.emit("SUCCESS", f"Resposta concluída com sucesso via {provider.name}")
-                            return response.json(), provider
+
+                            usage_info = res_json.get("usage") or {}
+                            choices = res_json.get("choices") or []
+                            resp_content = ""
+                            if choices:
+                                resp_content = choices[0].get("message", {}).get("content", "")
+                            if not resp_content:
+                                resp_content = json.dumps(res_json, indent=2, ensure_ascii=False)
+
+                            p_tokens = usage_info.get("prompt_tokens")
+                            c_tokens = usage_info.get("completion_tokens")
+                            if p_tokens is None:
+                                p_tokens = max(1, sum(len(m.get("content", "")) for m in req_payload.get("messages", [])) // 4)
+                            if c_tokens is None:
+                                c_tokens = max(1, len(resp_content) // 4) if resp_content else 0
+                            t_tokens = usage_info.get("total_tokens") or (p_tokens + c_tokens)
+
+                            bus_logger.emit(
+                                "COMPLETION_FINISHED",
+                                f"Requisição concluída via {provider.name} ({target_model}) em {elapsed_ms}ms | {t_tokens} tokens",
+                                details={
+                                    "provider": provider.name,
+                                    "model": target_model,
+                                    "latency_ms": elapsed_ms,
+                                    "stream": False,
+                                    "prompt": req_payload,
+                                    "response": resp_content,
+                                    "usage": {
+                                        "prompt_tokens": p_tokens,
+                                        "completion_tokens": c_tokens,
+                                        "total_tokens": t_tokens,
+                                    },
+                                },
+                            )
+                            return res_json, provider
                         else:
                             raw_body = response.text
                             err = f"Status {response.status_code} de {provider.name}: {raw_body[:200]}"

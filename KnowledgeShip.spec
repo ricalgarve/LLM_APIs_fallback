@@ -19,9 +19,13 @@ hiddenimports = [
     'uvicorn.lifespan.off',
     'anyio._backends._asyncio',
     'updater',
+    'pystray',
+    'pystray._win32',
+    'PIL',
+    'PIL.Image',
 ]
 
-for mod in ['uvicorn', 'fastapi', 'starlette']:
+for mod in ['uvicorn', 'fastapi', 'starlette', 'pystray']:
     d, b, h = collect_all(mod)
     datas += d
     binaries += b

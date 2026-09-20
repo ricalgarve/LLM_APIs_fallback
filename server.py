@@ -172,6 +172,11 @@ async def chat_completions(req: ChatCompletionRequest, request: Request):
         "REQ",
         f"POST /v1/chat/completions | De: {client_ip} | Modelo: {req.model} | Stream: {should_stream} | Msg: \"{preview}\"",
     )
+    bus_logger.emit(
+        "REQ_RECEIVED",
+        f"Requisição recebida de {client_ip} | Modelo: {req.model}",
+        details={"client_ip": client_ip, "model": req.model, "stream": should_stream},
+    )
 
     payload = {
         "model": req.model,

@@ -147,6 +147,10 @@ class ServerConfig:
     show_thinking: bool = True
     require_auth: bool = False
     auth_token: str = ""
+    minimize_to_tray: bool = True
+    sound_on_request: bool = True
+    sound_type: str = "water_drop"  # "water_drop" ou "beep"
+    show_request_toast: bool = True
 
 
 @dataclass
@@ -193,6 +197,10 @@ class AppConfig:
             show_thinking=bool(server_data.get("show_thinking", True)),
             require_auth=bool(server_data.get("require_auth", False)),
             auth_token=str(server_data.get("auth_token", "")),
+            minimize_to_tray=bool(server_data.get("minimize_to_tray", True)),
+            sound_on_request=bool(server_data.get("sound_on_request", True)),
+            sound_type=str(server_data.get("sound_type", "water_drop")),
+            show_request_toast=bool(server_data.get("show_request_toast", True)),
         )
 
         providers = []

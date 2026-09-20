@@ -7,7 +7,11 @@
     "default_stream": true,
     "show_thinking": true,
     "require_auth": false,
-    "auth_token": ""
+    "auth_token": "",
+    "minimize_to_tray": true,
+    "sound_on_request": true,
+    "sound_type": "water_drop",
+    "show_request_toast": true
   },
   "providers": [
     {

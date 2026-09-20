@@ -18,6 +18,9 @@ import time
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 from typing import Optional, List, Dict, Any, Tuple
+from pathlib import Path
+from PIL import Image
+import pystray
 
 from config import app_config, ProviderConfig, get_local_ip, generate_bearer_token, parse_headers_input, format_headers_for_display, get_resource_path
 from version import __version__, APP_NAME, APP_SHORT_NAME
@@ -52,7 +55,7 @@ FONT_CODE = ("Consolas", 9)
 class LLMFallbackGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title(f"🚢 {APP_NAME} v{__version__} - OpenAI Localhost API")
+        self.root.title(f"{APP_NAME} v{__version__} - OpenAI Localhost API")
         self.root.geometry("1260x860")
         self.root.minsize(1020, 680)
         self.root.configure(bg=BG_DARK)
@@ -70,6 +73,15 @@ class LLMFallbackGUI:
         self.active_details_modal: Optional[tk.Toplevel] = None
         self.active_details_prov_id: Optional[str] = None
 
+        # Configurações Gerais
+        self.var_tray_enabled = tk.BooleanVar(value=getattr(app_config.server, "minimize_to_tray", True))
+        self.var_sound_enabled = tk.BooleanVar(value=getattr(app_config.server, "sound_on_request", True))
+        self.var_sound_type = tk.StringVar(value=getattr(app_config.server, "sound_type", "water_drop"))
+        self.var_toast_enabled = tk.BooleanVar(value=getattr(app_config.server, "show_request_toast", True))
+        self.tray_icon = None
+        self.active_toast_window: Optional[tk.Toplevel] = None
+        self.last_toast_details: Dict[str, Any] = {}
+
         # Inicia servidor local em thread separada se a porta estiver livre
         self.start_background_server()
 
@@ -77,6 +89,12 @@ class LLMFallbackGUI:
         self._setup_styles()
         self._build_header()
         self._build_notebook_tabs()
+
+        # Configuração de fechamento e minimização para a bandeja do sistema
+        self.root.protocol("WM_DELETE_WINDOW", self._on_window_close)
+        self.root.bind("<Unmap>", self._on_window_unmap)
+        if self.var_tray_enabled.get():
+            self._start_tray_icon()
 
         # Inscreve listener para receber logs do barramento em tempo real
         bus_logger.subscribe(lambda event: self.gui_queue.put(("bus_log", event)))
@@ -198,7 +216,7 @@ class LLMFallbackGUI:
 
         title_lbl = tk.Label(
             title_box,
-            text=f"🚢 {APP_SHORT_NAME}",
+            text=APP_SHORT_NAME,
             font=FONT_TITLE,
             fg=ACCENT_BLUE,
             bg=BG_PANEL,
@@ -443,10 +461,15 @@ class LLMFallbackGUI:
         self.tab_network = tk.Frame(self.notebook, bg=BG_DARK)
         self.notebook.add(self.tab_network, text="🌐 Rede & Segurança (Bearer Token)")
 
+        # Aba 5: Configurações Gerais
+        self.tab_general = tk.Frame(self.notebook, bg=BG_DARK)
+        self.notebook.add(self.tab_general, text="⚙️ Configurações Gerais")
+
         self._build_tab_chat(self.tab_chat)
         self._build_tab_console(self.tab_console)
         self._build_tab_providers(self.tab_providers)
         self._build_tab_network(self.tab_network)
+        self._build_tab_general(self.tab_general)
 
     # ==========================================================================
     # ABA 1: CHAT & MONITOR
@@ -1499,6 +1522,596 @@ class LLMFallbackGUI:
         ).pack(side=tk.LEFT)
 
         self._update_curl_preview()
+
+    # ==========================================================================
+    # ABA 5: CONFIGURAÇÕES GERAIS (Tray Icon, Notificações Sonoras & HUD Toast)
+    # ==========================================================================
+    def _build_tab_general(self, parent):
+        container = tk.Frame(parent, bg=BG_DARK, padx=16, pady=16)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        # Seção 1: Bandeja do Sistema (System Tray)
+        sec_tray = tk.LabelFrame(
+            container,
+            text=" 🚢 Bandeja do Sistema (System Tray Icon) ",
+            font=FONT_SUBTITLE,
+            fg=ACCENT_BLUE,
+            bg=BG_PANEL,
+            padx=14,
+            pady=12,
+        )
+        sec_tray.pack(fill=tk.X, pady=(0, 14))
+
+        tk.Checkbutton(
+            sec_tray,
+            text="Habilitar ícone na bandeja do sistema (System Tray)",
+            variable=self.var_tray_enabled,
+            font=FONT_BOLD,
+            fg=FG_TEXT,
+            bg=BG_PANEL,
+            activebackground=BG_PANEL,
+            activeforeground=FG_TEXT,
+            selectcolor=BG_INPUT,
+            cursor="hand2",
+            command=self._on_tray_toggle,
+        ).pack(anchor=tk.W, pady=(0, 4))
+
+        tk.Label(
+            sec_tray,
+            text="Quando ativado, minimizar ou fechar a janela ocultará o aplicativo para a bandeja ao lado do relógio do Windows.\n"
+                 "Dê um clique duplo ou clique com o botão direito no ícone do navio para restaurar ou encerrar a aplicação.",
+            font=FONT_MAIN,
+            fg=FG_SUBTEXT,
+            bg=BG_PANEL,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(0, 10))
+
+        btn_tray_bar = tk.Frame(sec_tray, bg=BG_PANEL)
+        btn_tray_bar.pack(fill=tk.X)
+
+        tk.Button(
+            btn_tray_bar,
+            text="⬇️ Minimizar Agora para a Bandeja",
+            command=self._minimize_to_tray_now,
+            font=FONT_MAIN,
+            fg="#11111b",
+            bg=ACCENT_BLUE,
+            relief=tk.FLAT,
+            padx=12,
+            pady=4,
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
+
+        # Seção 2: Notificações Sonoras
+        sec_sound = tk.LabelFrame(
+            container,
+            text=" 🔊 Notificações Sonoras (Áudio) ",
+            font=FONT_SUBTITLE,
+            fg=ACCENT_YELLOW,
+            bg=BG_PANEL,
+            padx=14,
+            pady=12,
+        )
+        sec_sound.pack(fill=tk.X, pady=(0, 14))
+
+        tk.Checkbutton(
+            sec_sound,
+            text="Disparar som ao receber requisição no barramento (/v1/chat/completions)",
+            variable=self.var_sound_enabled,
+            font=FONT_BOLD,
+            fg=ACCENT_YELLOW,
+            bg=BG_PANEL,
+            activebackground=BG_PANEL,
+            activeforeground=ACCENT_YELLOW,
+            selectcolor=BG_INPUT,
+            cursor="hand2",
+            command=self._save_general_settings,
+        ).pack(anchor=tk.W, pady=(0, 4))
+
+        sound_choice_frame = tk.Frame(sec_sound, bg=BG_PANEL)
+        sound_choice_frame.pack(fill=tk.X, pady=(4, 6))
+
+        tk.Label(sound_choice_frame, text="Efeito Sonoro:", font=FONT_MAIN, fg=FG_TEXT, bg=BG_PANEL).pack(side=tk.LEFT, padx=(0, 10))
+
+        sound_options = [
+            ("💧 Gota d'Água na Água (Recomendado)", "water_drop"),
+            ("🔔 Beep / Sino Padrão do Windows", "beep"),
+        ]
+
+        val_to_label = {v: l for l, v in sound_options}
+        label_to_val = {l: v for l, v in sound_options}
+        current_val = self.var_sound_type.get()
+
+        self.sound_display_var = tk.StringVar(value=val_to_label.get(current_val, "💧 Gota d'Água na Água (Recomendado)"))
+
+        def _on_sound_type_select(event=None):
+            sel_label = self.sound_display_var.get()
+            self.var_sound_type.set(label_to_val.get(sel_label, "water_drop"))
+            self._save_general_settings()
+            self._test_sound()
+
+        combo_sound = ttk.Combobox(
+            sound_choice_frame,
+            textvariable=self.sound_display_var,
+            values=[l for l, _ in sound_options],
+            state="readonly",
+            width=36,
+        )
+        combo_sound.pack(side=tk.LEFT)
+        combo_sound.bind("<<ComboboxSelected>>", _on_sound_type_select)
+
+        tk.Label(
+            sec_sound,
+            text="Toca um efeito sonoro suave e acústico toda vez que uma nova requisição chegar ao barramento.",
+            font=FONT_MAIN,
+            fg=FG_SUBTEXT,
+            bg=BG_PANEL,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(4, 10))
+
+        btn_sound_bar = tk.Frame(sec_sound, bg=BG_PANEL)
+        btn_sound_bar.pack(fill=tk.X)
+
+        tk.Button(
+            btn_sound_bar,
+            text="🔊 Testar Som de Requisição",
+            command=self._test_sound,
+            font=FONT_MAIN,
+            fg="#11111b",
+            bg=ACCENT_YELLOW,
+            relief=tk.FLAT,
+            padx=12,
+            pady=4,
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
+
+        # Seção 3: Notificação Flutuante (Toast HUD)
+        sec_toast = tk.LabelFrame(
+            container,
+            text=" 🪟 Notificação Flutuante de Requisições (Toast HUD no Canto da Tela) ",
+            font=FONT_SUBTITLE,
+            fg=ACCENT_GREEN,
+            bg=BG_PANEL,
+            padx=14,
+            pady=12,
+        )
+        sec_toast.pack(fill=tk.X, pady=(0, 14))
+
+        tk.Checkbutton(
+            sec_toast,
+            text="Exibir card flutuante com tokens e links de inspeção ao concluir cada requisição",
+            variable=self.var_toast_enabled,
+            font=FONT_BOLD,
+            fg=ACCENT_GREEN,
+            bg=BG_PANEL,
+            activebackground=BG_PANEL,
+            activeforeground=ACCENT_GREEN,
+            selectcolor=BG_INPUT,
+            cursor="hand2",
+            command=self._save_general_settings,
+        ).pack(anchor=tk.W, pady=(0, 4))
+
+        tk.Label(
+            sec_toast,
+            text="Exibe uma notificação flutuante elegante no canto inferior direito da tela com tempo de resposta,\n"
+                 "total de tokens utilizados (Prompt + Resposta) e dois links diretos para visualizar o Prompt enviado e a Resposta do provedor.",
+            font=FONT_MAIN,
+            fg=FG_SUBTEXT,
+            bg=BG_PANEL,
+            justify=tk.LEFT,
+        ).pack(anchor=tk.W, pady=(0, 10))
+
+        btn_toast_bar = tk.Frame(sec_toast, bg=BG_PANEL)
+        btn_toast_bar.pack(fill=tk.X)
+
+        tk.Button(
+            btn_toast_bar,
+            text="🪟 Testar Notificação Flutuante",
+            command=self._test_toast,
+            font=FONT_MAIN,
+            fg="#11111b",
+            bg=ACCENT_GREEN,
+            relief=tk.FLAT,
+            padx=12,
+            pady=4,
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
+
+        # Rodapé com Botão Salvar
+        bottom_bar = tk.Frame(container, bg=BG_DARK, pady=10)
+        bottom_bar.pack(fill=tk.X)
+
+        tk.Button(
+            bottom_bar,
+            text="💾 Salvar Configurações Gerais",
+            command=self._save_general_settings,
+            font=FONT_BOLD,
+            fg="#11111b",
+            bg=ACCENT_BLUE,
+            relief=tk.FLAT,
+            padx=16,
+            pady=6,
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
+
+        self.lbl_general_status = tk.Label(bottom_bar, text="", font=FONT_BOLD, fg=ACCENT_GREEN, bg=BG_DARK)
+        self.lbl_general_status.pack(side=tk.LEFT, padx=(12, 0))
+
+    def _save_general_settings(self):
+        app_config.server.minimize_to_tray = bool(self.var_tray_enabled.get())
+        app_config.server.sound_on_request = bool(self.var_sound_enabled.get())
+        app_config.server.sound_type = str(self.var_sound_type.get())
+        app_config.server.show_request_toast = bool(self.var_toast_enabled.get())
+        app_config.save()
+        if hasattr(self, "lbl_general_status"):
+            self.lbl_general_status.config(text="✅ Configurações salvas com sucesso!", fg=ACCENT_GREEN)
+            self.root.after(3000, lambda: self.lbl_general_status.config(text="") if hasattr(self, "lbl_general_status") else None)
+
+    def _on_tray_toggle(self):
+        self._save_general_settings()
+        if self.var_tray_enabled.get():
+            self._start_tray_icon()
+        else:
+            self._stop_tray_icon()
+
+    def _start_tray_icon(self):
+        if self.tray_icon is not None:
+            return
+
+        def _restore_action(icon=None, item=None):
+            self.root.after(0, self._restore_from_tray)
+
+        def _quit_action(icon=None, item=None):
+            self.root.after(0, self._quit_application)
+
+        def _minimize_action(icon=None, item=None):
+            self.root.after(0, self._minimize_to_tray_now)
+
+        try:
+            img = None
+            for rel in ["assets/ship.png", "ship.png"]:
+                p = get_resource_path(rel).resolve()
+                if not p.exists():
+                    p = (Path(sys.executable).parent / rel).resolve()
+                if p.exists():
+                    img = Image.open(str(p))
+                    break
+
+            if img is None:
+                img = Image.new("RGBA", (64, 64), color=(137, 180, 250, 255))
+
+            menu = pystray.Menu(
+                pystray.MenuItem("Abrir Knowledge Ship", _restore_action, default=True),
+                pystray.MenuItem("Minimizar para a Bandeja", _minimize_action),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Sair", _quit_action),
+            )
+
+            self.tray_icon = pystray.Icon(
+                "KnowledgeShip",
+                img,
+                f"{APP_NAME} v{__version__}",
+                menu,
+            )
+            self.tray_icon.run_detached()
+        except Exception as e:
+            print(f"[AVISO] Falha ao inicializar Tray Icon: {e}")
+            self.tray_icon = None
+
+    def _stop_tray_icon(self):
+        if self.tray_icon:
+            try:
+                self.tray_icon.stop()
+            except Exception:
+                pass
+            self.tray_icon = None
+
+    def _on_window_close(self):
+        if self.var_tray_enabled.get():
+            self._minimize_to_tray_now()
+        else:
+            self._quit_application()
+
+    def _on_window_unmap(self, event):
+        if event.widget == self.root:
+            if self.root.state() == "iconic" and self.var_tray_enabled.get():
+                self._minimize_to_tray_now()
+
+    def _minimize_to_tray_now(self):
+        if not self.tray_icon:
+            self._start_tray_icon()
+        self.root.withdraw()
+
+    def _restore_from_tray(self):
+        self.root.deiconify()
+        self.root.state("normal")
+        self.root.lift()
+        self.root.focus_force()
+
+    def _quit_application(self):
+        self._stop_tray_icon()
+        self.root.destroy()
+        sys.exit(0)
+
+    def _play_request_sound(self):
+        if not self.var_sound_enabled.get():
+            return
+        sound_type = self.var_sound_type.get() if hasattr(self, "var_sound_type") else getattr(app_config.server, "sound_type", "water_drop")
+
+        def _play():
+            if sys.platform == "win32":
+                try:
+                    import winsound
+                    if sound_type == "water_drop":
+                        wav_path = get_resource_path("assets/water_drop.wav").resolve()
+                        if not wav_path.exists():
+                            wav_path = (Path(sys.executable).parent / "assets" / "water_drop.wav").resolve()
+                        if wav_path.exists():
+                            winsound.PlaySound(str(wav_path), winsound.SND_FILENAME | winsound.SND_ASYNC)
+                            return
+                    winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                except Exception:
+                    pass
+        threading.Thread(target=_play, daemon=True).start()
+
+    def _test_sound(self):
+        self._play_request_sound()
+
+    def _on_request_received(self, data: Dict[str, Any]):
+        self._play_request_sound()
+
+    def _on_completion_finished(self, data: Dict[str, Any]):
+        details = data.get("details") or {}
+        self._show_request_toast(details)
+
+    def _close_toast(self, toast=None):
+        target = toast or self.active_toast_window
+        if target:
+            try:
+                target.destroy()
+            except Exception:
+                pass
+        if target == self.active_toast_window:
+            self.active_toast_window = None
+
+    def _show_request_toast(self, details: Dict[str, Any]):
+        if not self.var_toast_enabled.get():
+            return
+
+        self._close_toast()
+
+        toast = tk.Toplevel(self.root)
+        self.active_toast_window = toast
+        self.last_toast_details = dict(details)
+
+        toast.overrideredirect(True)
+        toast.attributes("-topmost", True)
+        toast.configure(bg=BG_PANEL, highlightthickness=1, highlightbackground=ACCENT_BLUE)
+
+        prov_name = details.get("provider", "Provedor LLM")
+        model = details.get("model", "auto")
+        lat_ms = details.get("latency_ms", 0)
+        usage = details.get("usage") or {}
+        p_tokens = usage.get("prompt_tokens", 0)
+        c_tokens = usage.get("completion_tokens", 0)
+        t_tokens = usage.get("total_tokens", p_tokens + c_tokens)
+
+        # Barra de título do toast
+        hdr = tk.Frame(toast, bg="#181825", padx=8, pady=5)
+        hdr.pack(fill=tk.X)
+
+        tk.Label(hdr, text="🚢 Knowledge Ship", font=FONT_BOLD, fg=ACCENT_BLUE, bg="#181825").pack(side=tk.LEFT)
+        tk.Label(hdr, text=f"⚡ {lat_ms}ms", font=("Segoe UI", 9, "bold"), fg=ACCENT_GREEN, bg="#181825").pack(side=tk.LEFT, padx=(8, 0))
+
+        btn_close = tk.Button(
+            hdr,
+            text="✕",
+            font=("Segoe UI", 9, "bold"),
+            fg=FG_SUBTEXT,
+            bg="#181825",
+            activeforeground=ACCENT_RED,
+            activebackground="#181825",
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            command=lambda: self._close_toast(toast),
+        )
+        btn_close.pack(side=tk.RIGHT)
+
+        # Corpo
+        body = tk.Frame(toast, bg=BG_PANEL, padx=10, pady=8)
+        body.pack(fill=tk.BOTH, expand=True)
+
+        prov_lbl = f"{prov_name} • {model}"
+        if len(prov_lbl) > 42:
+            prov_lbl = prov_lbl[:40] + "..."
+        tk.Label(body, text=prov_lbl, font=("Segoe UI", 9, "bold"), fg=FG_TEXT, bg=BG_PANEL, anchor=tk.W).pack(fill=tk.X)
+
+        tokens_frame = tk.Frame(body, bg=BG_PANEL)
+        tokens_frame.pack(fill=tk.X, pady=(4, 6))
+
+        tk.Label(tokens_frame, text=f"📊 Total: {t_tokens} tokens", font=("Segoe UI", 10, "bold"), fg=ACCENT_YELLOW, bg=BG_PANEL).pack(side=tk.LEFT)
+        tk.Label(tokens_frame, text=f" (Prompt: {p_tokens} | Resposta: {c_tokens})", font=("Segoe UI", 8), fg=FG_SUBTEXT, bg=BG_PANEL).pack(side=tk.LEFT, padx=(4, 0))
+
+        # Links/Botões de inspeção
+        actions = tk.Frame(body, bg=BG_PANEL)
+        actions.pack(fill=tk.X, pady=(2, 0))
+
+        btn_prompt = tk.Button(
+            actions,
+            text="📄 Ver Prompt Enviado",
+            command=lambda: self._open_prompt_modal(details),
+            font=("Segoe UI", 9, "underline"),
+            fg=ACCENT_BLUE,
+            bg=BG_PANEL,
+            activeforeground="#b4befe",
+            activebackground=BG_PANEL,
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            padx=0,
+            pady=0,
+        )
+        btn_prompt.pack(side=tk.LEFT, padx=(0, 14))
+
+        btn_resp = tk.Button(
+            actions,
+            text="💬 Ver Resposta do Provider",
+            command=lambda: self._open_response_modal(details),
+            font=("Segoe UI", 9, "underline"),
+            fg=ACCENT_GREEN,
+            bg=BG_PANEL,
+            activeforeground="#a6e3a1",
+            activebackground=BG_PANEL,
+            relief=tk.FLAT,
+            bd=0,
+            cursor="hand2",
+            padx=0,
+            pady=0,
+        )
+        btn_resp.pack(side=tk.LEFT)
+
+        toast.update_idletasks()
+        w = max(340, toast.winfo_reqwidth())
+        h = max(115, toast.winfo_reqheight())
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        x = screen_w - w - 24
+        y = screen_h - h - 60
+        toast.geometry(f"{w}x{h}+{x}+{y}")
+
+        toast.after(8000, lambda: self._close_toast(toast))
+
+    def _test_toast(self):
+        mock_details = {
+            "provider": "Groq",
+            "model": "llama-3.3-70b-versatile",
+            "latency_ms": 385.4,
+            "usage": {
+                "prompt_tokens": 42,
+                "completion_tokens": 128,
+                "total_tokens": 170,
+            },
+            "prompt": {
+                "model": "llama-3.3-70b-versatile",
+                "messages": [
+                    {"role": "system", "content": "Você é um assistente útil e conciso."},
+                    {"role": "user", "content": "Olá! Testando a notificação flutuante do Knowledge Ship."},
+                ],
+                "temperature": 0.7,
+                "stream": True,
+            },
+            "response": "Olá! A notificação flutuante do Knowledge Ship está funcionando perfeitamente! Os tokens e os links para ver o prompt e a resposta estão 100% operacionais.",
+        }
+        self._show_request_toast(mock_details)
+
+    def _open_prompt_modal(self, details: Dict[str, Any]):
+        prov_name = details.get("provider", "Provedor")
+        model = details.get("model", "")
+        prompt_data = details.get("prompt", "")
+
+        modal = tk.Toplevel(self.root)
+        modal.title(f"Prompt Enviado - {prov_name} ({model})")
+        modal.geometry("780x540")
+        modal.configure(bg=BG_PANEL)
+        modal.attributes("-topmost", True)
+
+        try:
+            modal.geometry("+%d+%d" % (self.root.winfo_rootx() + 80, self.root.winfo_rooty() + 80))
+        except Exception:
+            pass
+
+        hdr = tk.Frame(modal, bg=BG_DARK, padx=14, pady=10)
+        hdr.pack(fill=tk.X)
+        tk.Label(hdr, text=f"📄 Payload / Prompt Enviado para {prov_name}", font=FONT_TITLE, fg=ACCENT_BLUE, bg=BG_DARK).pack(side=tk.LEFT)
+
+        txt_frame = tk.Frame(modal, bg=BG_PANEL, padx=14, pady=10)
+        txt_frame.pack(fill=tk.BOTH, expand=True)
+
+        txt = scrolledtext.ScrolledText(
+            txt_frame,
+            wrap=tk.WORD,
+            bg=BG_INPUT,
+            fg=FG_TEXT,
+            font=FONT_CODE,
+            relief=tk.FLAT,
+            padx=8,
+            pady=8,
+        )
+        txt.pack(fill=tk.BOTH, expand=True)
+
+        if isinstance(prompt_data, (dict, list)):
+            formatted_text = json.dumps(prompt_data, indent=2, ensure_ascii=False)
+        else:
+            formatted_text = str(prompt_data)
+
+        txt.insert(tk.END, formatted_text)
+        txt.config(state=tk.DISABLED)
+
+        btn_bar = tk.Frame(modal, bg=BG_PANEL, padx=14, pady=10)
+        btn_bar.pack(fill=tk.X)
+
+        def _copy():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(formatted_text)
+            messagebox.showinfo("Copiado", "Prompt copiado para a área de transferência!", parent=modal)
+
+        tk.Button(btn_bar, text="📋 Copiar", command=_copy, font=FONT_BOLD, fg="#11111b", bg=ACCENT_BLUE, relief=tk.FLAT, padx=12, pady=4, cursor="hand2").pack(side=tk.LEFT)
+        tk.Button(btn_bar, text="Fechar", command=modal.destroy, font=FONT_MAIN, fg=FG_TEXT, bg=BG_INPUT, relief=tk.FLAT, padx=12, pady=4, cursor="hand2").pack(side=tk.RIGHT)
+
+    def _open_response_modal(self, details: Dict[str, Any]):
+        prov_name = details.get("provider", "Provedor")
+        model = details.get("model", "")
+        response_data = details.get("response", "")
+
+        modal = tk.Toplevel(self.root)
+        modal.title(f"Resposta do Provider - {prov_name} ({model})")
+        modal.geometry("780x540")
+        modal.configure(bg=BG_PANEL)
+        modal.attributes("-topmost", True)
+
+        try:
+            modal.geometry("+%d+%d" % (self.root.winfo_rootx() + 90, self.root.winfo_rooty() + 90))
+        except Exception:
+            pass
+
+        hdr = tk.Frame(modal, bg=BG_DARK, padx=14, pady=10)
+        hdr.pack(fill=tk.X)
+        tk.Label(hdr, text=f"💬 Resposta Recebida de {prov_name}", font=FONT_TITLE, fg=ACCENT_GREEN, bg=BG_DARK).pack(side=tk.LEFT)
+
+        txt_frame = tk.Frame(modal, bg=BG_PANEL, padx=14, pady=10)
+        txt_frame.pack(fill=tk.BOTH, expand=True)
+
+        txt = scrolledtext.ScrolledText(
+            txt_frame,
+            wrap=tk.WORD,
+            bg=BG_INPUT,
+            fg=FG_TEXT,
+            font=FONT_MAIN,
+            relief=tk.FLAT,
+            padx=8,
+            pady=8,
+        )
+        txt.pack(fill=tk.BOTH, expand=True)
+
+        if isinstance(response_data, (dict, list)):
+            formatted_text = json.dumps(response_data, indent=2, ensure_ascii=False)
+        else:
+            formatted_text = str(response_data)
+
+        txt.insert(tk.END, formatted_text)
+        txt.config(state=tk.DISABLED)
+
+        btn_bar = tk.Frame(modal, bg=BG_PANEL, padx=14, pady=10)
+        btn_bar.pack(fill=tk.X)
+
+        def _copy():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(formatted_text)
+            messagebox.showinfo("Copiado", "Resposta copiada para a área de transferência!", parent=modal)
+
+        tk.Button(btn_bar, text="📋 Copiar", command=_copy, font=FONT_BOLD, fg="#11111b", bg=ACCENT_GREEN, relief=tk.FLAT, padx=12, pady=4, cursor="hand2").pack(side=tk.LEFT)
+        tk.Button(btn_bar, text="Fechar", command=modal.destroy, font=FONT_MAIN, fg=FG_TEXT, bg=BG_INPUT, relief=tk.FLAT, padx=12, pady=4, cursor="hand2").pack(side=tk.RIGHT)
 
     def _on_network_mode_changed(self):
         choice = self.var_network_mode.get()
@@ -2906,7 +3519,11 @@ class LLMFallbackGUI:
                 elif msg_type == "bus_log":
                     self._append_console_event(data)
                     level = (data.get("level") or data.get("category") or "").upper()
-                    if level in ("FALLBACK", "WARN"):
+                    if level == "REQ_RECEIVED":
+                        self._on_request_received(data)
+                    elif level == "COMPLETION_FINISHED":
+                        self._on_completion_finished(data)
+                    elif level in ("FALLBACK", "WARN"):
                         msg = data.get("message", "")
                         for p in app_config.providers:
                             if p.name.lower() in msg.lower() or p.id.lower() in msg.lower():
