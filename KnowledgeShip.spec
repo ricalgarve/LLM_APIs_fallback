@@ -20,10 +20,15 @@ hiddenimports = [
     'anyio._backends._asyncio',
     'updater',
     'pystray',
-    'pystray._win32',
     'PIL',
     'PIL.Image',
 ]
+
+import sys
+if sys.platform == 'win32':
+    hiddenimports.append('pystray._win32')
+elif sys.platform.startswith('linux'):
+    hiddenimports += ['pystray._xorg', 'pystray._appindicator', 'pystray._gtk']
 
 for mod in ['uvicorn', 'fastapi', 'starlette', 'pystray']:
     d, b, h = collect_all(mod)

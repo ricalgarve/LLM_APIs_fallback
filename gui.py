@@ -1852,6 +1852,28 @@ class LLMFallbackGUI:
                     winsound.MessageBeep(winsound.MB_ICONASTERISK)
                 except Exception:
                     pass
+            elif sys.platform.startswith("linux") or sys.platform == "darwin":
+                try:
+                    import shutil
+                    import subprocess
+                    wav_path = get_resource_path("assets/water_drop.wav").resolve()
+                    if not wav_path.exists():
+                        wav_path = (Path(sys.executable).parent / "assets" / "water_drop.wav").resolve()
+
+                    if sound_type == "water_drop" and wav_path.exists():
+                        for player in ["afplay", "paplay", "pw-play", "aplay", "canberra-gtk-play"]:
+                            if shutil.which(player):
+                                if player == "canberra-gtk-play":
+                                    subprocess.Popen([player, "-f", str(wav_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                else:
+                                    subprocess.Popen([player, str(wav_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                return
+
+                    # Fallback sonoro de terminal
+                    sys.stdout.write("\a")
+                    sys.stdout.flush()
+                except Exception:
+                    pass
         threading.Thread(target=_play, daemon=True).start()
 
     def _test_sound(self):
