@@ -111,6 +111,14 @@ def main():
     print(f"Atualizando executável portátil em {RELEASES_DIR / 'KnowledgeShip.exe'}...")
     shutil.copy2(built_exe, RELEASES_DIR / "KnowledgeShip.exe")
 
+    # Copia a pasta assets para releases também
+    src_assets = BASE_DIR / "assets"
+    dest_assets = RELEASES_DIR / "assets"
+    if src_assets.exists():
+        if dest_assets.exists():
+            shutil.rmtree(dest_assets)
+        shutil.copytree(src_assets, dest_assets)
+
     src_example = BASE_DIR / "config.example.json"
     if src_example.exists():
         shutil.copy2(src_example, dest_example)

@@ -144,21 +144,40 @@ class LLMFallbackGUI:
         )
 
     def _setup_window_icon(self):
-        """Define o ícone náutico (ship) para a janela e barra de tarefas do Windows."""
-        try:
-            ico_path = get_resource_path("assets/ship.ico")
-            if ico_path.exists():
-                self.root.iconbitmap(str(ico_path))
-        except Exception:
-            pass
+        """Define o ícone náutico (ship) para a janela e barra de tarefas do Windows, substituindo a pena padrão do Tkinter."""
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ricalgarve.knowledgeship.1.0")
+            except Exception:
+                pass
 
-        try:
-            png_path = get_resource_path("assets/ship.png")
-            if png_path.exists():
-                self.ship_icon_img = tk.PhotoImage(file=str(png_path))
-                self.root.iconphoto(True, self.ship_icon_img)
-        except Exception:
-            pass
+        ico_applied = False
+        for rel in ["assets/ship.ico", "ship.ico"]:
+            try:
+                ico_path = get_resource_path(rel).resolve()
+                if not ico_path.exists():
+                    ico_path = (Path(sys.executable).parent / rel).resolve()
+                if ico_path.exists():
+                    self.root.iconbitmap(default=str(ico_path))
+                    self.root.iconbitmap(str(ico_path))
+                    ico_applied = True
+                    break
+            except Exception:
+                pass
+
+        if not ico_applied or sys.platform != "win32":
+            for rel in ["assets/ship.png", "ship.png"]:
+                try:
+                    png_path = get_resource_path(rel).resolve()
+                    if not png_path.exists():
+                        png_path = (Path(sys.executable).parent / rel).resolve()
+                    if png_path.exists():
+                        self.ship_icon_img = tk.PhotoImage(file=str(png_path))
+                        self.root.iconphoto(True, self.ship_icon_img)
+                        break
+                except Exception:
+                    pass
 
     def _build_header(self):
         header_frame = tk.Frame(self.root, bg=BG_PANEL, height=55, padx=16, pady=8)

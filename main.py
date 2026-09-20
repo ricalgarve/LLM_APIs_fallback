@@ -25,6 +25,14 @@ if hasattr(sys.stdout, "reconfigure"):
     except Exception:
         pass
 
+# Registra App ID explícito no Windows para fixar o ícone náutico na barra de tarefas
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ricalgarve.knowledgeship.1.0")
+    except Exception:
+        pass
+
 import uvicorn
 from config import app_config
 from router import router
