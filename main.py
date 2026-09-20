@@ -10,7 +10,14 @@ import threading
 import time
 from typing import Optional
 
-# Configura encoding UTF-8 no terminal Windows
+import io
+
+# Garante streams válidos mesmo quando compilado com --noconsole no PyInstaller
+if sys.stdout is None:
+    sys.stdout = io.StringIO()
+if sys.stderr is None:
+    sys.stderr = io.StringIO()
+
 if hasattr(sys.stdout, "reconfigure"):
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -22,6 +29,7 @@ import uvicorn
 from config import app_config
 from router import router
 from server import app
+from version import APP_NAME, __version__
 
 
 import socket
@@ -47,7 +55,7 @@ def start_server_in_thread(host: str, port: int) -> Optional[threading.Thread]:
 
 def print_banner(host: str, port: int):
     print("\n" + "=" * 70)
-    print("🚀 BARRAMENTO DE FALLBACK DE LLMs (OpenAI-Compatible Localhost)")
+    print(f"🚢 {APP_NAME.upper()} (v{__version__})")
     print("=" * 70)
     print(f"📡 API Localhost Ativa  : http://{host}:{port}/v1/chat/completions")
     print(f"📋 Modelos Disponíveis  : http://{host}:{port}/v1/models")
@@ -190,7 +198,7 @@ def run_interactive_cli():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Barramento de Fallback de LLMs com Servidor Localhost")
+    parser = argparse.ArgumentParser(description=f"{APP_NAME} com Servidor Localhost")
     parser.add_argument("--server-only", action="store_true", help="Executa apenas o servidor FastAPI sem abrir chat interativo.")
     parser.add_argument("--check", action="store_true", help="Verifica a integridade de todos os provedores e sai.")
     parser.add_argument("-p", "--prompt", type=str, default=None, help="Executa um prompt único via barramento e sai.")

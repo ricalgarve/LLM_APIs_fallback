@@ -1,0 +1,91 @@
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8000,
+    "mode": "auto",
+    "timeout_seconds": 60,
+    "default_stream": true,
+    "show_thinking": true,
+    "require_auth": false,
+    "auth_token": ""
+  },
+  "providers": [
+    {
+      "id": "nvidia",
+      "name": "NVIDIA NIM",
+      "base_url": "https://integrate.api.nvidia.com/v1",
+      "api_key": "nvapi-seu-token-aqui",
+      "model": "nvidia/nemotron-3.5-lightning-30b-a3b",
+      "models": [
+        "nvidia/nemotron-3.5-lightning-30b-a3b",
+        "meta/llama-3.1-70b-instruct",
+        "meta/llama-3.1-8b-instruct"
+      ],
+      "enabled": true,
+      "headers": {},
+      "signup_url": "https://build.nvidia.com/"
+    },
+    {
+      "id": "mistral",
+      "name": "Mistral AI",
+      "base_url": "https://api.mistral.ai/v1",
+      "api_key": "sua_chave_mistral_aqui",
+      "model": "open-mistral-7b",
+      "models": [
+        "open-mistral-7b",
+        "open-mistral-nemo",
+        "codestral-latest",
+        "mistral-small-latest",
+        "mistral-large-latest"
+      ],
+      "enabled": true,
+      "headers": {},
+      "signup_url": "https://console.mistral.ai/"
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama (Local)",
+      "base_url": "http://localhost:11434/v1",
+      "api_key": "ollama",
+      "model": "qwen3.5:latest",
+      "models": [
+        "qwen3.5:latest",
+        "gemma4:31b-cloud"
+      ],
+      "enabled": true,
+      "headers": {},
+      "signup_url": "https://ollama.com/"
+    },
+    {
+      "id": "gemini",
+      "name": "Gemini API",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "api_key": "sua_chave_gemini_aqui",
+      "model": "gemini-3.6-flash",
+      "models": [
+        "gemini-3.6-flash",
+        "gemini-3.8-flash"
+      ],
+      "enabled": true,
+      "headers": {
+        "Api-Revision": "2026-05-20"
+      },
+      "signup_url": "https://aistudio.google.com/app/apikey"
+    },
+    {
+      "id": "grok",
+      "name": "Grok API",
+      "base_url": "https://api.groq.com/openai/v1",
+      "api_key": "gsk_sua_chave_aqui",
+      "model": "qwen/qwen3.8-27b",
+      "models": [
+        "openai/gpt-oss-20b",
+        "meta-llama/llama-prompt-guard-2-22m",
+        "qwen/qwen3.8-27b"
+      ],
+      "enabled": true,
+      "headers": {},
+      "signup_url": "https://console.groq.com/keys"
+    }
+  ]
+}

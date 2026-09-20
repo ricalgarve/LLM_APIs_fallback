@@ -31,6 +31,17 @@ htmlcov/
 # Logs
 *.log
 
+# PyInstaller / Pastas de Compilação
+build/
+dist/
+*.manifest
+
+# Ignorar executáveis duplicados em subpastas de release para não inflar o Git
+releases/*/*.exe
+
+# Manter apenas o executável portátil principal na raiz de releases/
+!releases/*.exe
+
 # Arquivos de Sistema Operacional
 .DS_Store
 Thumbs.db

@@ -6,12 +6,26 @@ Carrega, valida e persiste os provedores, parâmetros de rede e segurança do se
 import json
 import secrets
 import socket
+import sys
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import List, Optional, Dict
 
-BASE_DIR = Path(__file__).resolve().parent
+if getattr(sys, "frozen", False):
+    # Quando empacotado como executável (.exe) portátil pelo PyInstaller
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    # Quando executado diretamente via script Python
+    BASE_DIR = Path(__file__).resolve().parent
+
 CONFIG_PATH = BASE_DIR / "config.json"
+
+
+def get_resource_path(relative_path: str) -> Path:
+    """Retorna o caminho de um recurso (ícones, modelos), funcionando tanto em dev quanto no pacote PyInstaller."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return Path(sys._MEIPASS) / relative_path
+    return Path(__file__).resolve().parent / relative_path
 
 
 def get_local_ip() -> str:

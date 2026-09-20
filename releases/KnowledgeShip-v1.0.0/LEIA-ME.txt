@@ -1,0 +1,17 @@
+============================================================
+ KNOWLEDGE SHIP - GERENCIADOR DE ROTAS LLM
+ Versao Portatil: v1.0.0
+============================================================
+
+COMO USAR:
+1. De dois cliques em KnowledgeShip.exe para iniciar o programa.
+2. Na primeira execucao, se voce nao tiver um arquivo config.json,
+   ele criara automaticamente a partir do config.example.json.
+3. Todas as alteracoes salvas na interface grafica serao gravadas
+   no config.json desta mesma pasta.
+4. Voce pode mover esta pasta inteira para qualquer computador ou pendrive!
+
+ENDPOINTS DISPONIVEIS APOS INICIAR:
+- API Local (OpenAI-compatible): http://localhost:8000/v1/chat/completions
+- Lista de Modelos             : http://localhost:8000/v1/models
+- Status e Diagnostico         : http://localhost:8000/status

@@ -19,10 +19,13 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 from typing import Optional, List, Dict, Any, Tuple
 
-from config import app_config, ProviderConfig, get_local_ip, generate_bearer_token, parse_headers_input, format_headers_for_display
+from config import app_config, ProviderConfig, get_local_ip, generate_bearer_token, parse_headers_input, format_headers_for_display, get_resource_path
+from version import __version__, APP_NAME, APP_SHORT_NAME
 from router import router, HealthResult, get_provider_endpoint_url
 from server import run_server
 from bus_logger import bus_logger
+import updater
+import webbrowser
 
 # ==============================================================================
 # TEMA E CORES (Dark Mode Moderno)
@@ -49,10 +52,13 @@ FONT_CODE = ("Consolas", 9)
 class LLMFallbackGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Barramento de Fallback de LLMs - OpenAI Localhost API")
+        self.root.title(f"🚢 {APP_NAME} v{__version__} - OpenAI Localhost API")
         self.root.geometry("1260x860")
         self.root.minsize(1020, 680)
         self.root.configure(bg=BG_DARK)
+
+        # Ícone Náutico da Janela (Barco)
+        self._setup_window_icon()
 
         self.gui_queue = queue.Queue()
         self.is_generating = False
@@ -78,6 +84,7 @@ class LLMFallbackGUI:
         # Agenda processador da fila e health check inicial
         self.root.after(50, self._process_queue)
         self.root.after(400, self.trigger_health_check)
+        self.root.after(2000, lambda: self._check_for_updates_interactive(manual=False))
 
     def start_background_server(self):
         """Inicia o servidor FastAPI local caso ainda não esteja rodando."""
@@ -136,28 +143,266 @@ class LLMFallbackGUI:
             lightcolor=BORDER_COLOR,
         )
 
+    def _setup_window_icon(self):
+        """Define o ícone náutico (ship) para a janela e barra de tarefas do Windows."""
+        try:
+            ico_path = get_resource_path("assets/ship.ico")
+            if ico_path.exists():
+                self.root.iconbitmap(str(ico_path))
+        except Exception:
+            pass
+
+        try:
+            png_path = get_resource_path("assets/ship.png")
+            if png_path.exists():
+                self.ship_icon_img = tk.PhotoImage(file=str(png_path))
+                self.root.iconphoto(True, self.ship_icon_img)
+        except Exception:
+            pass
+
     def _build_header(self):
         header_frame = tk.Frame(self.root, bg=BG_PANEL, height=55, padx=16, pady=8)
         header_frame.pack(side=tk.TOP, fill=tk.X)
 
+        # Banner de Nova Versão (inicia oculto e é empacotado no topo quando há release disponível)
+        self.update_banner_frame = tk.Frame(
+            self.root,
+            bg="#181825",
+            padx=16,
+            pady=8,
+            highlightthickness=1,
+            highlightbackground=ACCENT_BLUE,
+        )
+
+        title_box = tk.Frame(header_frame, bg=BG_PANEL)
+        title_box.pack(side=tk.LEFT)
+
         title_lbl = tk.Label(
-            header_frame,
-            text="🚀 Barramento de Fallback de LLMs",
+            title_box,
+            text=f"🚢 {APP_SHORT_NAME}",
             font=FONT_TITLE,
             fg=ACCENT_BLUE,
             bg=BG_PANEL,
         )
         title_lbl.pack(side=tk.LEFT)
 
+        sub_lbl = tk.Label(
+            title_box,
+            text=f" - Gerenciador de Rotas LLM  (v{__version__})",
+            font=FONT_SUBTITLE,
+            fg=FG_SUBTEXT,
+            bg=BG_PANEL,
+        )
+        sub_lbl.pack(side=tk.LEFT, padx=(4, 0), pady=(3, 0))
+
+        right_box = tk.Frame(header_frame, bg=BG_PANEL)
+        right_box.pack(side=tk.RIGHT)
+
+        btn_check_update = tk.Button(
+            right_box,
+            text="🔄 Checar Atualizações",
+            command=lambda: self._check_for_updates_interactive(manual=True),
+            font=("Segoe UI", 9),
+            fg=ACCENT_BLUE,
+            bg=BG_INPUT,
+            activebackground="#313244",
+            activeforeground=ACCENT_BLUE,
+            relief=tk.FLAT,
+            padx=8,
+            pady=3,
+            cursor="hand2",
+        )
+        btn_check_update.pack(side=tk.RIGHT, padx=(12, 0))
+
         api_url = f"http://{app_config.server.host}:{app_config.server.port}/v1"
         self.server_status_lbl = tk.Label(
-            header_frame,
+            right_box,
             text=f"🟢 API Ativa: {api_url}",
             font=FONT_BOLD,
             fg=ACCENT_GREEN,
             bg=BG_PANEL,
         )
         self.server_status_lbl.pack(side=tk.RIGHT)
+
+    def _check_for_updates_interactive(self, manual: bool = False):
+        """Verifica se há nova versão em background e avisa o usuário."""
+        def _worker():
+            info = updater.check_for_updates()
+            self.root.after(0, lambda: self._on_update_check_finished(info, manual))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_update_check_finished(self, info: updater.UpdateInfo, manual: bool):
+        if info.has_update:
+            self._show_update_banner(info)
+        elif manual:
+            if info.error_message and "404" not in info.error_message:
+                messagebox.showwarning("Aviso", f"Não foi possível verificar atualizações no momento:\n{info.error_message}")
+            else:
+                messagebox.showinfo("Atualizado", f"Você já está utilizando a versão mais recente do Knowledge Ship (v{info.current_version})!")
+
+    def _show_update_banner(self, info: updater.UpdateInfo):
+        for w in self.update_banner_frame.winfo_children():
+            w.destroy()
+
+        self.update_banner_frame.pack(side=tk.TOP, fill=tk.X, padx=10, pady=(4, 6))
+
+        lbl = tk.Label(
+            self.update_banner_frame,
+            text=f"🚀 Nova versão disponível: v{info.latest_version}! (Versão atual: v{info.current_version})",
+            font=FONT_BOLD,
+            fg=ACCENT_YELLOW,
+            bg="#181825",
+        )
+        lbl.pack(side=tk.LEFT)
+
+        btn_box = tk.Frame(self.update_banner_frame, bg="#181825")
+        btn_box.pack(side=tk.RIGHT)
+
+        btn_update = tk.Button(
+            btn_box,
+            text="⚡ Atualizar Agora",
+            command=lambda: self._start_update_process(info),
+            font=FONT_BOLD,
+            fg="#11111b",
+            bg=ACCENT_GREEN,
+            activebackground="#a6e3a1",
+            relief=tk.FLAT,
+            padx=12,
+            pady=3,
+            cursor="hand2",
+        )
+        btn_update.pack(side=tk.LEFT, padx=(0, 8))
+
+        if info.html_url:
+            btn_notes = tk.Button(
+                btn_box,
+                text="🔗 Ver Notas no GitHub",
+                command=lambda: webbrowser.open(info.html_url),
+                font=FONT_MAIN,
+                fg="#11111b",
+                bg=ACCENT_BLUE,
+                activebackground="#b4befe",
+                relief=tk.FLAT,
+                padx=8,
+                pady=3,
+                cursor="hand2",
+            )
+            btn_notes.pack(side=tk.LEFT, padx=(0, 8))
+
+        btn_close = tk.Button(
+            btn_box,
+            text="✖ Lembrar Depois",
+            command=lambda: self.update_banner_frame.pack_forget(),
+            font=FONT_MAIN,
+            fg=FG_SUBTEXT,
+            bg=BG_INPUT,
+            relief=tk.FLAT,
+            padx=8,
+            pady=3,
+            cursor="hand2",
+        )
+        btn_close.pack(side=tk.LEFT)
+
+    def _start_update_process(self, info: updater.UpdateInfo):
+        """Inicia o processo de atualização automática."""
+        # Se estiver rodando via Python em desenvolvimento (não compilado)
+        if not getattr(sys, "frozen", False):
+            msg = (
+                f"Uma nova versão (v{info.latest_version}) foi encontrada no GitHub!\n\n"
+                "Como você está executando a aplicação a partir do código-fonte Python (.py), "
+                "para atualizar execute 'git pull' no terminal ou baixe o release executável."
+            )
+            if messagebox.askyesno("Atualização Disponível", f"{msg}\n\nDeseja abrir a página do GitHub agora?"):
+                webbrowser.open(info.html_url or f"https://github.com/{updater.GITHUB_REPO}/releases")
+            return
+
+        # Se não há link de download direto do executável
+        if not info.download_url:
+            msg = (
+                f"A versão v{info.latest_version} foi detectada, mas o arquivo executável "
+                "ainda não foi anexado ao release oficial do GitHub.\n\nDeseja abrir a página do GitHub no navegador?"
+            )
+            if messagebox.askyesno("Aviso", msg):
+                webbrowser.open(info.html_url or f"https://github.com/{updater.GITHUB_REPO}/releases")
+            return
+
+        # Modal com barra de progresso do download
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"Atualizando Knowledge Ship para v{info.latest_version}")
+        dlg.geometry("480x210")
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+        dlg.configure(bg=BG_PANEL)
+
+        try:
+            dlg.geometry("+%d+%d" % (self.root.winfo_rootx() + 250, self.root.winfo_rooty() + 180))
+        except Exception:
+            pass
+
+        tk.Label(dlg, text="⬇️ Baixando Nova Versão...", font=FONT_TITLE, fg=ACCENT_BLUE, bg=BG_PANEL).pack(pady=(16, 4))
+        lbl_status = tk.Label(dlg, text="Conectando aos servidores do GitHub...", font=FONT_MAIN, fg=FG_TEXT, bg=BG_PANEL)
+        lbl_status.pack(pady=(0, 10))
+
+        prog_bar = ttk.Progressbar(dlg, length=420, mode="determinate", maximum=100)
+        prog_bar.pack(pady=(0, 8))
+
+        lbl_percent = tk.Label(dlg, text="0%", font=FONT_BOLD, fg=ACCENT_YELLOW, bg=BG_PANEL)
+        lbl_percent.pack(pady=(0, 10))
+
+        is_cancelled = False
+
+        def _cancel():
+            nonlocal is_cancelled
+            is_cancelled = True
+            dlg.destroy()
+
+        btn_cancel = tk.Button(dlg, text="Cancelar", command=_cancel, font=FONT_MAIN, fg=FG_TEXT, bg=BG_INPUT, relief=tk.FLAT, padx=12, pady=4, cursor="hand2")
+        btn_cancel.pack()
+
+        def _download_worker():
+            from pathlib import Path
+            target_exe = Path(sys.executable).resolve().parent / "KnowledgeShip_update.exe"
+
+            def _progress(percent, dl_mb, total_mb):
+                dlg.after(0, lambda: self._update_download_ui(prog_bar, lbl_status, lbl_percent, percent, dl_mb, total_mb))
+
+            try:
+                success = updater.download_file_with_progress(
+                    url=info.download_url,
+                    dest_path=target_exe,
+                    progress_callback=_progress,
+                    cancel_check=lambda: is_cancelled,
+                )
+                if success and not is_cancelled:
+                    dlg.after(0, lambda: self._on_download_complete(dlg, lbl_status, btn_cancel, target_exe))
+            except Exception as e:
+                if not is_cancelled:
+                    dlg.after(0, lambda: messagebox.showerror("Erro no Download", f"Falha ao baixar a atualização:\n{e}"))
+                    dlg.after(0, dlg.destroy)
+
+        threading.Thread(target=_download_worker, daemon=True).start()
+
+    def _update_download_ui(self, prog_bar, lbl_status, lbl_percent, percent, dl_mb, total_mb):
+        prog_bar["value"] = percent
+        lbl_percent.config(text=f"{percent:.1f}%")
+        if total_mb > 0:
+            lbl_status.config(text=f"Baixando: {dl_mb:.2f} MB de {total_mb:.2f} MB")
+        else:
+            lbl_status.config(text=f"Baixando: {dl_mb:.2f} MB...")
+
+    def _on_download_complete(self, dlg, lbl_status, btn_cancel, target_exe):
+        btn_cancel.config(state="disabled")
+        lbl_status.config(text="✅ Download concluído! Reiniciando aplicativo...", fg=ACCENT_GREEN)
+        self.root.after(1600, lambda: self._apply_and_close(target_exe))
+
+    def _apply_and_close(self, target_exe):
+        try:
+            updater.apply_update_and_restart(target_exe)
+        finally:
+            self.root.destroy()
+            sys.exit(0)
 
     def _build_notebook_tabs(self):
         self.notebook = ttk.Notebook(self.root)
