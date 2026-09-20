@@ -8,7 +8,7 @@ import secrets
 import socket
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
@@ -29,6 +29,52 @@ def generate_bearer_token() -> str:
     return f"sk-local-{secrets.token_hex(16)}"
 
 
+def parse_headers_input(text: str) -> Dict[str, str]:
+    """Converte texto de headers (formato linha a linha 'Header: Valor', JSON ou flags cURL -H) em um dicionário."""
+    text = (text or "").strip()
+    if not text:
+        return {}
+
+    # Tenta como JSON se estiver entre chaves
+    if text.startswith("{") and text.endswith("}"):
+        try:
+            data = json.loads(text)
+            if isinstance(data, dict):
+                return {str(k).strip(): str(v).strip() for k, v in data.items() if str(k).strip()}
+        except Exception:
+            pass
+
+    headers: Dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        # Remove prefixo -H ou --header do cURL se copiado de documentação ou terminal
+        if line.startswith(("-H ", "--header ")):
+            line = line.split(maxsplit=1)[1].strip()
+
+        # Remove aspas externas se houver (ex: "Api-Revision: 2026-05-20" ou 'Api-Revision: 2026-05-20')
+        if (line.startswith('"') and line.endswith('"')) or (line.startswith("'") and line.endswith("'")):
+            line = line[1:-1].strip()
+
+        if ":" in line:
+            key, val = line.split(":", 1)
+            key = key.strip()
+            val = val.strip()
+            if key:
+                headers[key] = val
+
+    return headers
+
+
+def format_headers_for_display(headers: Optional[Dict[str, str]]) -> str:
+    """Formata o dicionário de headers para exibição no campo de texto da interface."""
+    if not headers or not isinstance(headers, dict):
+        return ""
+    return "\n".join(f"{k}: {v}" for k, v in headers.items())
+
+
 @dataclass
 class ProviderConfig:
     id: str
@@ -38,11 +84,21 @@ class ProviderConfig:
     model: str
     models: List[str] = field(default_factory=list)
     enabled: bool = True
+    headers: Dict[str, str] = field(default_factory=dict)
 
     def is_placeholder(self) -> bool:
         """Verifica se a chave de API ainda é um placeholder."""
         if not self.api_key:
-            return not self.is_local()
+            if self.is_local():
+                return False
+            # Se possui header de autenticação configurado com valor real (ex: x-goog-api-key), considera válido
+            custom_headers = getattr(self, "headers", None) or {}
+            for k, v in custom_headers.items():
+                if k.lower() in ("x-goog-api-key", "api-key", "x-api-key", "authorization"):
+                    if v and not any(p in v.lower() for p in ("sua_chave", "sua-chave", "your_api_key", "seu-token", "placeholder")):
+                        return False
+            return True
+
         placeholders = (
             "sua_chave_aqui",
             "gsk_sua_chave_aqui",
@@ -51,8 +107,10 @@ class ProviderConfig:
             "nvapi-seu-token-aqui",
             "sua-chave-aqui",
             "sua_chave_mistral_aqui",
+            "sua_chave_gemini_aqui",
             "sua_chave",
             "seu-token-aqui",
+            "your_api_key",
         )
         return any(p in self.api_key for p in placeholders)
 
@@ -136,6 +194,11 @@ class AppConfig:
             elif active_model and active_model not in models_list:
                 models_list.insert(0, active_model)
 
+            raw_headers = p.get("headers", {})
+            headers_dict = {}
+            if isinstance(raw_headers, dict):
+                headers_dict = {str(k).strip(): str(v).strip() for k, v in raw_headers.items() if str(k).strip()}
+
             providers.append(
                 ProviderConfig(
                     id=p["id"],
@@ -145,6 +208,7 @@ class AppConfig:
                     model=active_model,
                     models=models_list,
                     enabled=bool(p.get("enabled", True)),
+                    headers=headers_dict,
                 )
             )
 
@@ -288,6 +352,23 @@ class AppConfig:
                         "google/gemini-2.0-flash-exp:free",
                         "qwen/qwen-2.5-coder-32b-instruct:free",
                     ],
+                    enabled=False,
+                ),
+                ProviderConfig(
+                    id="gemini",
+                    name="Google Gemini",
+                    base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+                    api_key="sua_chave_gemini_aqui",
+                    model="gemini-2.5-flash",
+                    models=[
+                        "gemini-2.5-flash",
+                        "gemini-2.5-pro",
+                        "gemini-2.0-flash",
+                        "gemini-1.5-flash",
+                    ],
+                    headers={
+                        "Api-Revision": "2026-05-20",
+                    },
                     enabled=False,
                 ),
                 ProviderConfig(

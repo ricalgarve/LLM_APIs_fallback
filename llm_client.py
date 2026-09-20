@@ -19,11 +19,13 @@ class LLMClient:
         api_key: Optional[str] = None,
         default_model: Optional[str] = None,
         settings: Optional[Settings] = None,
+        default_headers: Optional[Dict[str, str]] = None,
     ):
         self.settings = settings or config
         self._custom_base_url = base_url
         self._custom_api_key = api_key
         self._custom_model = default_model
+        self._custom_headers = default_headers
         self._client: Optional[OpenAI] = None
 
     @property
@@ -43,10 +45,14 @@ class LLMClient:
         """Inicializa e retorna o cliente configurado com o endpoint e a API key especificados."""
         if self._client is None:
             self.settings.validate()
-            self._client = OpenAI(
-                base_url=self.base_url,
-                api_key=self.api_key or "not-needed",
-            )
+            headers = self._custom_headers or getattr(self.settings, "headers", None)
+            kwargs = {
+                "base_url": self.base_url,
+                "api_key": self.api_key or "not-needed",
+            }
+            if headers:
+                kwargs["default_headers"] = headers
+            self._client = OpenAI(**kwargs)
         return self._client
 
     def chat_completion(

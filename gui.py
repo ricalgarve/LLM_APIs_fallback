@@ -19,8 +19,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext, simpledialog
 from typing import Optional, List, Dict, Any, Tuple
 
-from config import app_config, ProviderConfig, get_local_ip, generate_bearer_token
-from router import router, HealthResult
+from config import app_config, ProviderConfig, get_local_ip, generate_bearer_token, parse_headers_input, format_headers_for_display
+from router import router, HealthResult, get_provider_endpoint_url
 from server import run_server
 from bus_logger import bus_logger
 
@@ -770,9 +770,40 @@ class LLMFallbackGUI:
         )
         btn_del_model.pack(side=tk.LEFT)
 
+        # 7. Headers HTTP Customizados (ex: Api-Revision, x-goog-api-key)
+        tk.Label(
+            form_frame,
+            text="🌐 Headers HTTP Customizados (um por linha 'Header: Valor', JSON ou flags cURL):",
+            font=FONT_MAIN,
+            fg=FG_TEXT,
+            bg=BG_PANEL,
+        ).grid(row=12, column=0, sticky=tk.W, pady=(6, 2))
+
+        self.text_prov_headers = tk.Text(
+            form_frame,
+            height=3,
+            font=FONT_CODE,
+            bg=BG_INPUT,
+            fg=FG_TEXT,
+            insertbackground=FG_TEXT,
+            relief=tk.FLAT,
+            padx=8,
+            pady=5,
+        )
+        self.text_prov_headers.grid(row=13, column=0, sticky="ew", pady=(0, 2))
+
+        lbl_hint_headers = tk.Label(
+            form_frame,
+            text="Ex: Api-Revision: 2026-05-20  |  x-goog-api-key: SUA_CHAVE  |  HTTP-Referer: https://meusite.com",
+            font=("Segoe UI", 8),
+            fg=FG_SUBTEXT,
+            bg=BG_PANEL,
+        )
+        lbl_hint_headers.grid(row=14, column=0, sticky=tk.W, pady=(0, 6))
+
         # Botões de Ação do formulário
         action_bar = tk.Frame(form_frame, bg=BG_PANEL)
-        action_bar.grid(row=12, column=0, sticky="ew", pady=(14, 0))
+        action_bar.grid(row=15, column=0, sticky="ew", pady=(10, 0))
 
         tk.Button(
             action_bar,
@@ -859,6 +890,10 @@ class LLMFallbackGUI:
         self.combo_prov_model["values"] = models
         self.combo_prov_model.set(p.model)
         self.var_prov_enabled.set(p.enabled)
+        headers = getattr(p, "headers", {}) or {}
+        self.text_prov_headers.delete("1.0", tk.END)
+        if headers:
+            self.text_prov_headers.insert("1.0", format_headers_for_display(headers))
 
     def _on_new_provider_click(self):
         self.current_editing_id = None
@@ -869,6 +904,7 @@ class LLMFallbackGUI:
         self.entry_prov_url.delete(0, tk.END)
         self.entry_prov_url.insert(0, "https://api.exemplo.com/v1")
         self.entry_prov_key.delete(0, tk.END)
+        self.text_prov_headers.delete("1.0", tk.END)
         self.combo_prov_model["values"] = ["modelo-exemplo-1", "modelo-exemplo-2"]
         self.combo_prov_model.set("modelo-exemplo-1")
         self.var_prov_enabled.set(True)
@@ -975,6 +1011,9 @@ class LLMFallbackGUI:
         if selected_model not in models:
             models.append(selected_model)
 
+        headers_raw = self.text_prov_headers.get("1.0", tk.END).strip()
+        headers = parse_headers_input(headers_raw)
+
         new_p = ProviderConfig(
             id=pid,
             name=name,
@@ -983,6 +1022,7 @@ class LLMFallbackGUI:
             model=selected_model,
             models=models,
             enabled=enabled,
+            headers=headers,
         )
         app_config.upsert_provider(new_p, old_id=self.current_editing_id)
         self.current_editing_id = pid
@@ -999,16 +1039,20 @@ class LLMFallbackGUI:
             return
 
         current_model = self.combo_prov_model.get().strip() or p.model
+        headers_raw = self.text_prov_headers.get("1.0", tk.END).strip()
+        current_headers = parse_headers_input(headers_raw) if headers_raw else (getattr(p, "headers", {}) or {})
+        current_key = self.entry_prov_key.get().strip() or p.api_key
 
         def _test_worker():
             test_p = ProviderConfig(
                 id=p.id,
                 name=p.name,
                 base_url=p.base_url,
-                api_key=p.api_key,
+                api_key=current_key,
                 model=current_model,
                 models=getattr(p, "models", []),
                 enabled=p.enabled,
+                headers=current_headers,
             )
             res = asyncio.run(router.check_provider_health(test_p))
             self.gui_queue.put(("health_single_result", res))
@@ -1264,11 +1308,21 @@ class LLMFallbackGUI:
         if not provider:
             return "# Nenhum provedor configurado no momento."
 
-        url = f"{provider.base_url.rstrip('/')}/chat/completions"
+        url = get_provider_endpoint_url(provider)
         headers = [
             '-H "Content-Type: application/json"',
-            f'-H "Authorization: Bearer {provider.api_key}"',
         ]
+        if provider.api_key:
+            headers.append(f'-H "Authorization: Bearer {provider.api_key}"')
+
+        custom_headers = getattr(provider, "headers", None)
+        if custom_headers and isinstance(custom_headers, dict):
+            for k, v in custom_headers.items():
+                if k.lower() == "authorization" and not v:
+                    headers = [h for h in headers if not h.startswith('-H "Authorization:')]
+                else:
+                    headers.append(f'-H "{k}: {v}"')
+
         json_str = json.dumps(payload, ensure_ascii=False)
         headers_cmd = " ".join(headers)
         return f'curl -N -X POST "{url}" {headers_cmd} -d \'{json_str}\''

@@ -36,6 +36,36 @@ class HealthResult:
     raw_response: Optional[str] = None
 
 
+def get_provider_headers(provider: ProviderConfig) -> Dict[str, str]:
+    """Retorna os headers HTTP mesclando autorização padrão e headers customizados do provedor."""
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if provider.api_key:
+        headers["Authorization"] = f"Bearer {provider.api_key}"
+
+    custom_headers = getattr(provider, "headers", None)
+    if custom_headers and isinstance(custom_headers, dict):
+        for k, v in custom_headers.items():
+            if k.lower() == "authorization" and not v:
+                headers.pop("Authorization", None)
+            else:
+                headers[k] = v
+
+    return headers
+
+
+def get_provider_endpoint_url(provider: ProviderConfig) -> str:
+    """Retorna a URL completa do endpoint chat/completions, evitando duplicidades ou tratando endpoints conhecidos."""
+    raw = provider.base_url.strip().rstrip('/')
+    if raw.endswith("/interactions"):
+        # Google Gemini: se o usuário configurou a URL de interactions, mapeia para o endpoint OpenAI do Gemini
+        return "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    if raw.endswith("/chat/completions"):
+        return raw
+    return f"{raw}/chat/completions"
+
+
 def build_curl_command(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> str:
     """Monta o comando cURL equivalente à requisição HTTP direta ao provedor."""
     headers_cmd = " ".join([f'-H "{k}: {v}"' for k, v in headers.items()])
@@ -86,17 +116,14 @@ class LLMRouter:
             self.last_results[provider.id] = res
             return res
 
-        headers = {
-            "Authorization": f"Bearer {provider.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = get_provider_headers(provider)
         test_payload = {
             "model": provider.model,
             "messages": [{"role": "user", "content": "hi"}],
             "max_tokens": 1,
         }
 
-        url = f"{provider.base_url.rstrip('/')}/chat/completions"
+        url = get_provider_endpoint_url(provider)
         start_time = time.perf_counter()
 
         try:
@@ -225,11 +252,8 @@ class LLMRouter:
             req_payload["model"] = target_model
             req_payload["stream"] = stream
 
-            headers = {
-                "Authorization": f"Bearer {provider.api_key}",
-                "Content-Type": "application/json",
-            }
-            url = f"{provider.base_url.rstrip('/')}/chat/completions"
+            headers = get_provider_headers(provider)
+            url = get_provider_endpoint_url(provider)
             curl_cmd = build_curl_command(url, headers, req_payload)
 
             bus_logger.emit(
