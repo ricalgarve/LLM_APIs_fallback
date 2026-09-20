@@ -734,11 +734,47 @@ class LLMFallbackGUI:
 
         # 4. Base URL
         self.entry_prov_url = self._create_form_field(form_frame, "Base URL do Endpoint (OpenAI-compatible):", 3)
-        
-        # 5. API Key com botão de exibir/ocultar
-        tk.Label(form_frame, text="API Key / Token:", font=FONT_MAIN, fg=FG_TEXT, bg=BG_PANEL).grid(row=8, column=0, sticky=tk.W, pady=(4, 1))
+
+        # 5. URL de Cadastro / Console da API (com botão para abrir no navegador)
+        tk.Label(
+            form_frame,
+            text="🔗 URL de Cadastro / Obtenção de Chave (Console da API):",
+            font=FONT_MAIN,
+            fg=FG_TEXT,
+            bg=BG_PANEL,
+        ).grid(row=8, column=0, sticky=tk.W, pady=(4, 1))
+
+        signup_frame = tk.Frame(form_frame, bg=BG_PANEL)
+        signup_frame.grid(row=9, column=0, sticky="ew", pady=(0, 4))
+
+        self.entry_prov_signup = tk.Entry(
+            signup_frame,
+            bg=BG_INPUT,
+            fg=FG_TEXT,
+            insertbackground=FG_TEXT,
+            font=FONT_MAIN,
+            relief=tk.FLAT,
+        )
+        self.entry_prov_signup.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=4)
+
+        btn_open_signup = tk.Button(
+            signup_frame,
+            text="🌐 Abrir no Navegador",
+            command=self._open_provider_signup_url,
+            font=FONT_MAIN,
+            fg="#11111b",
+            bg=ACCENT_YELLOW,
+            activebackground="#f9e2af",
+            relief=tk.FLAT,
+            padx=8,
+            cursor="hand2",
+        )
+        btn_open_signup.pack(side=tk.RIGHT, padx=(6, 0))
+
+        # 6. API Key com botão de exibir/ocultar
+        tk.Label(form_frame, text="API Key / Token:", font=FONT_MAIN, fg=FG_TEXT, bg=BG_PANEL).grid(row=10, column=0, sticky=tk.W, pady=(4, 1))
         key_frame = tk.Frame(form_frame, bg=BG_PANEL)
-        key_frame.grid(row=9, column=0, sticky="ew", pady=(0, 4))
+        key_frame.grid(row=11, column=0, sticky="ew", pady=(0, 4))
         form_frame.columnconfigure(0, weight=1)
 
         self.entry_prov_key = tk.Entry(key_frame, bg=BG_INPUT, fg=FG_TEXT, insertbackground=FG_TEXT, font=FONT_MAIN, relief=tk.FLAT, show="•")
@@ -756,17 +792,17 @@ class LLMFallbackGUI:
         )
         self.btn_toggle_eye.pack(side=tk.RIGHT, padx=(4, 0))
 
-        # 6. Modelos do Provedor (Seletor Combobox + Adicionar / Remover)
+        # 7. Modelos do Provedor (Seletor Combobox + Adicionar / Remover)
         tk.Label(
             form_frame,
             text="🤖 Modelo Ativo (Selecione da lista ou digite para adicionar):",
             font=FONT_MAIN,
             fg=FG_TEXT,
             bg=BG_PANEL,
-        ).grid(row=10, column=0, sticky=tk.W, pady=(4, 1))
+        ).grid(row=12, column=0, sticky=tk.W, pady=(4, 1))
 
         model_row = tk.Frame(form_frame, bg=BG_PANEL)
-        model_row.grid(row=11, column=0, sticky="ew", pady=(0, 4))
+        model_row.grid(row=13, column=0, sticky="ew", pady=(0, 4))
 
         self.combo_prov_model = ttk.Combobox(model_row, font=FONT_MAIN, state="normal")
         self.combo_prov_model.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=3)
@@ -801,14 +837,14 @@ class LLMFallbackGUI:
         )
         btn_del_model.pack(side=tk.LEFT)
 
-        # 7. Headers HTTP Customizados (ex: Api-Revision, x-goog-api-key)
+        # 8. Headers HTTP Customizados (ex: Api-Revision, x-goog-api-key)
         tk.Label(
             form_frame,
             text="🌐 Headers HTTP Customizados (um por linha 'Header: Valor', JSON ou flags cURL):",
             font=FONT_MAIN,
             fg=FG_TEXT,
             bg=BG_PANEL,
-        ).grid(row=12, column=0, sticky=tk.W, pady=(4, 1))
+        ).grid(row=14, column=0, sticky=tk.W, pady=(4, 1))
 
         self.text_prov_headers = tk.Text(
             form_frame,
@@ -821,7 +857,7 @@ class LLMFallbackGUI:
             padx=8,
             pady=4,
         )
-        self.text_prov_headers.grid(row=13, column=0, sticky="ew", pady=(0, 2))
+        self.text_prov_headers.grid(row=15, column=0, sticky="ew", pady=(0, 2))
 
         lbl_hint_headers = tk.Label(
             form_frame,
@@ -830,7 +866,7 @@ class LLMFallbackGUI:
             fg=FG_SUBTEXT,
             bg=BG_PANEL,
         )
-        lbl_hint_headers.grid(row=14, column=0, sticky=tk.W, pady=(0, 4))
+        lbl_hint_headers.grid(row=16, column=0, sticky=tk.W, pady=(0, 4))
 
         self._refresh_providers_list()
 
@@ -839,6 +875,16 @@ class LLMFallbackGUI:
         entry = tk.Entry(parent, bg=BG_INPUT, fg=FG_TEXT, insertbackground=FG_TEXT, font=FONT_MAIN, relief=tk.FLAT)
         entry.grid(row=row*2+1, column=0, sticky="ew", pady=(0, 4), ipady=4)
         return entry
+
+    def _open_provider_signup_url(self):
+        url = self.entry_prov_signup.get().strip()
+        if not url:
+            messagebox.showinfo("Aviso", "Nenhuma URL de cadastro/console informada para este provedor.")
+            return
+        if not (url.startswith("http://") or url.startswith("https://")):
+            url = "https://" + url
+        import webbrowser
+        webbrowser.open(url)
 
     def _toggle_api_key_visibility(self):
         if self.entry_prov_key.cget("show") == "":
@@ -884,6 +930,8 @@ class LLMFallbackGUI:
         self.entry_prov_name.insert(0, p.name)
         self.entry_prov_url.delete(0, tk.END)
         self.entry_prov_url.insert(0, p.base_url)
+        self.entry_prov_signup.delete(0, tk.END)
+        self.entry_prov_signup.insert(0, getattr(p, "signup_url", "") or "")
         self.entry_prov_key.delete(0, tk.END)
         self.entry_prov_key.insert(0, p.api_key)
         models = getattr(p, "models", []) or ([p.model] if p.model else [])
@@ -903,6 +951,8 @@ class LLMFallbackGUI:
         self.entry_prov_name.insert(0, "Novo Provedor")
         self.entry_prov_url.delete(0, tk.END)
         self.entry_prov_url.insert(0, "https://api.exemplo.com/v1")
+        self.entry_prov_signup.delete(0, tk.END)
+        self.entry_prov_signup.insert(0, "https://console.exemplo.com/keys")
         self.entry_prov_key.delete(0, tk.END)
         self.text_prov_headers.delete("1.0", tk.END)
         self.combo_prov_model["values"] = ["modelo-exemplo-1", "modelo-exemplo-2"]
@@ -999,6 +1049,7 @@ class LLMFallbackGUI:
         pid = self.entry_prov_id.get().strip().lower()
         name = self.entry_prov_name.get().strip()
         url = self.entry_prov_url.get().strip()
+        signup_url = self.entry_prov_signup.get().strip()
         key = self.entry_prov_key.get().strip()
         selected_model = self.combo_prov_model.get().strip()
         enabled = self.var_prov_enabled.get()
@@ -1023,6 +1074,7 @@ class LLMFallbackGUI:
             models=models,
             enabled=enabled,
             headers=headers,
+            signup_url=signup_url,
         )
         app_config.upsert_provider(new_p, old_id=self.current_editing_id)
         self.current_editing_id = pid
@@ -1053,6 +1105,7 @@ class LLMFallbackGUI:
                 models=getattr(p, "models", []),
                 enabled=p.enabled,
                 headers=current_headers,
+                signup_url=getattr(p, "signup_url", ""),
             )
             res = asyncio.run(router.check_provider_health(test_p))
             self.gui_queue.put(("health_single_result", res))

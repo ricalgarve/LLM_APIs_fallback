@@ -21,7 +21,9 @@
         "meta/llama-3.1-70b-instruct",
         "meta/llama-3.1-8b-instruct"
       ],
-      "enabled": true
+      "enabled": true,
+      "headers": {},
+      "signup_url": "https://build.nvidia.com/"
     },
     {
       "id": "mistral",
@@ -36,75 +38,54 @@
         "mistral-small-latest",
         "mistral-large-latest"
       ],
-      "enabled": true
-    },
-    {
-      "id": "openrouter",
-      "name": "OpenRouter",
-      "base_url": "https://openrouter.ai/api/v1",
-      "api_key": "sk-or-v1-sua_chave_aqui",
-      "model": "meta-llama/llama-3.3-70b-instruct:free",
-      "models": [
-        "meta-llama/llama-3.3-70b-instruct:free",
-        "deepseek/deepseek-r1:free",
-        "google/gemini-2.0-flash-exp:free",
-        "qwen/qwen-2.5-coder-32b-instruct:free"
-      ],
-      "enabled": false
-    },
-    {
-      "id": "gemini",
-      "name": "Google Gemini",
-      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-      "api_key": "sua_chave_gemini_aqui",
-      "model": "gemini-2.5-flash",
-      "models": [
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash"
-      ],
-      "headers": {
-        "Api-Revision": "2026-05-20"
-      },
-      "enabled": false
-    },
-    {
-      "id": "deepseek",
-      "name": "DeepSeek API",
-      "base_url": "https://api.deepseek.com/v1",
-      "api_key": "sk-sua_chave_aqui",
-      "model": "deepseek-chat",
-      "models": [
-        "deepseek-chat",
-        "deepseek-reasoner"
-      ],
-      "enabled": false
+      "enabled": true,
+      "headers": {},
+      "signup_url": "https://console.mistral.ai/"
     },
     {
       "id": "ollama",
       "name": "Ollama (Local)",
       "base_url": "http://localhost:11434/v1",
       "api_key": "ollama",
-      "model": "llama3.2",
+      "model": "qwen3.5:latest",
       "models": [
-        "llama3.2",
-        "mistral",
-        "qwen2.5:7b",
-        "deepseek-r1:7b"
+        "qwen3.5:latest",
+        "gemma4:31b-cloud"
       ],
-      "enabled": false
+      "enabled": true,
+      "headers": {},
+      "signup_url": "https://ollama.com/"
     },
     {
-      "id": "lmstudio",
-      "name": "LM Studio (Local)",
-      "base_url": "http://localhost:1234/v1",
-      "api_key": "not-needed",
-      "model": "local-model",
+      "id": "gemini",
+      "name": "Gemini API",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+      "api_key": "sua_chave_gemini_aqui",
+      "model": "gemini-3.6-flash",
       "models": [
-        "local-model"
+        "gemini-3.6-flash",
+        "gemini-3.8-flash"
       ],
-      "enabled": false
+      "enabled": true,
+      "headers": {
+        "Api-Revision": "2026-05-20"
+      },
+      "signup_url": "https://aistudio.google.com/app/apikey"
+    },
+    {
+      "id": "grok",
+      "name": "Grok API",
+      "base_url": "https://api.groq.com/openai/v1",
+      "api_key": "gsk_sua_chave_aqui",
+      "model": "qwen/qwen3.8-27b",
+      "models": [
+        "openai/gpt-oss-20b",
+        "meta-llama/llama-prompt-guard-2-22m",
+        "qwen/qwen3.8-27b"
+      ],
+      "enabled": true,
+      "headers": {},
+      "signup_url": "https://console.groq.com/keys"
     }
   ]
 }
