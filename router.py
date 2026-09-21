@@ -7,6 +7,7 @@ entre múltiplos provedores de Chat Completions.
 import asyncio
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from typing import AsyncGenerator, Dict, List, Optional, Tuple, Any
@@ -61,6 +62,15 @@ def get_provider_endpoint_url(provider: ProviderConfig) -> str:
     if raw.endswith("/interactions"):
         # Google Gemini: se o usuário configurou a URL de interactions, mapeia para o endpoint OpenAI do Gemini
         return "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+
+    # Tratamento para Ollama:
+    # O Ollama expõe sua API compatível com OpenAI no caminho /v1/chat/completions.
+    # Usuários frequentemente configuram a URL base com /api, /api/generate, /api/chat ou apenas a porta :11434.
+    # Normalizamos qualquer uma dessas variações para o endpoint oficial OpenAI do Ollama.
+    if ":11434" in raw or "ollama" in provider.id.lower() or "ollama" in raw.lower() or "ollama" in provider.name.lower():
+        clean_base = re.sub(r'/(api(/generate|/chat)?|v1(/chat/completions)?|chat/completions)?/?$', '', raw)
+        return f"{clean_base}/v1/chat/completions"
+
     if raw.endswith("/chat/completions"):
         return raw
     return f"{raw}/chat/completions"
@@ -86,9 +96,13 @@ class LLMRouter:
     def get_provider_health(self, provider_id: str) -> Optional[HealthResult]:
         return self.last_results.get(provider_id)
 
-    async def check_provider_health(self, provider: ProviderConfig, timeout: float = 15.0) -> HealthResult:
+    async def check_provider_health(self, provider: ProviderConfig, timeout: Optional[float] = None) -> HealthResult:
         """Verifica a integridade de um provedor específico fazendo um ping leve de completion."""
         checked_time = time.strftime("%H:%M:%S")
+
+        if timeout is None:
+            server_timeout = float(getattr(self.config.server, "timeout_seconds", 60) or 60)
+            timeout = min(server_timeout, 45.0) if provider.is_local() else min(server_timeout, 20.0)
 
         if not provider.enabled:
             res = HealthResult(

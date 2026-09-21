@@ -131,6 +131,8 @@ class ProviderConfig:
 
     def is_local(self) -> bool:
         """Verifica se o endpoint é local (Ollama, LM Studio, etc.)."""
+        if "ollama" in self.id.lower() or "ollama" in self.name.lower() or "lmstudio" in self.id.lower():
+            return True
         return any(
             h in self.base_url
             for h in ("localhost", "127.0.0.1", "0.0.0.0", ":11434", ":1234")
